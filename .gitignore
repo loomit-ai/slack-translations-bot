@@ -25,3 +25,11 @@ Thumbs.db
 # Logs
 *.log
 npm-debug.log*
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.import_linter_cache/

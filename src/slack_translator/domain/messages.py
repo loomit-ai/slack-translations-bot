@@ -1,0 +1,107 @@
+"""Value types that cross the ports (IF-05) and the outcomes a member can be shown.
+
+Outcomes carry facts, never wording. `delivery/views` turns each one into the Block Kit layout
+that the Design spec names (ADR-003).
+"""
+
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
+
+from slack_translator.domain.languages import LanguageCode
+
+
+@dataclass(frozen=True, slots=True)
+class MessageRef:
+    channel: str
+    ts: str
+    thread_root_ts: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SourceMessage:
+    ref: MessageRef
+    text: str
+    user_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class UserFacts:
+    team_id: str | None
+    is_bot: bool
+    deleted: bool
+    is_restricted: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ResponseUrl:
+    """A Slack response URL. It is a bearer capability: anyone holding it can post in the channel.
+
+    Its text form is fixed so the value cannot end up in a log line by accident.
+    """
+
+    _value: str = field(repr=False)
+
+    def reveal(self) -> str:
+        return self._value
+
+    def __str__(self) -> str:
+        return "[response-url]"
+
+    def __repr__(self) -> str:
+        return "ResponseUrl([response-url])"
+
+
+@dataclass(frozen=True, slots=True)
+class PrivateMessage:
+    """What the bot shows one member. Always has a fallback text and blocks (Design UI-18)."""
+
+    text: str
+    blocks: Sequence[Mapping[str, object]]
+
+
+@dataclass(frozen=True, slots=True)
+class Translated:
+    """UI-04 or UI-05: the private translation, naming the source language when it is known."""
+
+    text: str
+    source_language: str | None
+    source_language_code: LanguageCode | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class AlreadyInReadLanguage:
+    """UI-06: detection says the message is already in the reading language."""
+
+    language: str
+
+
+@dataclass(frozen=True, slots=True)
+class NothingToTranslate:
+    """ERR-04: fewer than 3 letters after cleaning."""
+
+
+@dataclass(frozen=True, slots=True)
+class MessageUnavailable:
+    """UI-07 (ERR-03): the message can no longer be fetched."""
+
+
+@dataclass(frozen=True, slots=True)
+class TranslationFailed:
+    """UI-08 (ERR-05). `retry_value` is the SLK-02 value for the Retry button."""
+
+    retry_value: str
+
+
+@dataclass(frozen=True, slots=True)
+class ChannelNotAllowed:
+    """UI-09 (ERR-02): an X3M member used the shortcut outside the allowlist."""
+
+
+ReadOutcome = (
+    Translated
+    | AlreadyInReadLanguage
+    | NothingToTranslate
+    | MessageUnavailable
+    | TranslationFailed
+    | ChannelNotAllowed
+)
