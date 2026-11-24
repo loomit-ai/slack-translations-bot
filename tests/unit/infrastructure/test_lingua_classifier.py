@@ -29,6 +29,7 @@ S1 = "Puse tres estrellas de papel en la caja azul."
 F1 = "La boîte bleue contient trois étoiles en papier."
 J1 = "青い箱に紙の星が三つ入っています。"
 
+EN = LanguageCode("en")
 SEED = candidates_of(
     parse_language_seed("en:team,es:team,ru:customer,ko:customer,vi:customer,zh:customer")
 )
@@ -72,7 +73,7 @@ async def test_configured_languages_are_recognised(
     result = await classifier.detect(text, SEED)
 
     assert result.language == code
-    assert 0.0 < result.confidence <= 1.0
+    assert 0.7 <= result.confidence <= 1.0
 
 
 async def test_chinese_does_not_name_a_script(classifier: LinguaClassifier) -> None:
@@ -80,7 +81,7 @@ async def test_chinese_does_not_name_a_script(classifier: LinguaClassifier) -> N
     assert (await classifier.detect(Z2, SEED)).script is None
 
 
-async def test_a_language_outside_the_candidates_is_other_with_lingua_confidence(
+async def test_a_language_outside_the_candidates_is_other_with_the_same_lead(
     classifier: LinguaClassifier,
 ) -> None:
     outside = await classifier.detect(F1, SEED)
@@ -88,7 +89,7 @@ async def test_a_language_outside_the_candidates_is_other_with_lingua_confidence
 
     assert outside.language == "other"
     assert inside.language == "fr"
-    assert outside.confidence == inside.confidence > 0.5
+    assert outside.confidence == inside.confidence >= 0.7
 
 
 async def test_japanese_is_other_until_it_is_configured(classifier: LinguaClassifier) -> None:
@@ -179,15 +180,48 @@ def scores(*pairs: tuple[str, float]) -> Scorer:
     return scorer
 
 
-async def test_a_result_above_one_or_below_zero_is_clamped(recorder: RecordingTelemetry) -> None:
-    high = with_scorer(recorder, scores(("ko", 1.0000001)))
-    low = with_scorer(recorder, scores(("ko", -0.2)))
+# CR-10: confidence is the lead, top / (top + second), not Lingua's raw top value.
+
+
+@pytest.mark.parametrize(
+    ("ranked", "expected"),
+    [
+        ((("en", 0.30), ("tl", 0.08)), Detection(EN, 0.789474)),
+        ((("en", 0.5), ("tl", 0.25)), Detection(EN, 0.666667)),
+        ((("en", 0.25), ("tl", 0.25)), Detection(EN, 0.5)),
+        ((("en", 0.97),), Detection(EN, 1.0)),
+        ((("en", 0.97), ("tl", 0.0)), Detection(EN, 1.0)),
+        ((("en", 0.4), ("tl", -0.1)), Detection(EN, 1.0)),
+        ((("fr", 0.6), ("it", 0.2)), Detection("other", 0.75)),
+        ((("fr", 0.9),), Detection("other", 1.0)),
+        ((("en", 0.0), ("tl", 0.0)), Detection("other", 0.0)),
+        ((("en", -0.2),), Detection("other", 0.0)),
+        ((("en", float("nan")), ("tl", 0.1)), Detection("other", 0.0)),
+        ((), Detection("other", 0.0)),
+    ],
+)
+async def test_confidence_is_the_lead_of_the_top_language_over_the_runner_up(
+    recorder: RecordingTelemetry,
+    ranked: tuple[tuple[str, float], ...],
+    expected: Detection,
+) -> None:
+    adapter = with_scorer(recorder, scores(*ranked))
     try:
-        assert (await high.detect(K1, SEED)).confidence == 1.0
-        assert await low.detect(K1, SEED) == Detection("other", 0.0)
+        assert await adapter.detect(K1, SEED) == expected
     finally:
-        await high.aclose()
-        await low.aclose()
+        await adapter.aclose()
+
+
+async def test_a_low_raw_score_with_a_clear_lead_still_names_the_language(
+    recorder: RecordingTelemetry,
+) -> None:
+    adapter = with_scorer(recorder, scores(("en", 0.15), ("xh", 0.05)))
+    try:
+        result = await adapter.detect(E1, SEED)
+    finally:
+        await adapter.aclose()
+
+    assert (result.language, result.confidence) == ("en", 0.75)
 
 
 async def test_an_empty_answer_from_the_detector_is_other_with_zero_confidence(

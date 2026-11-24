@@ -42,7 +42,7 @@ def test_minimal_environment_gets_the_documented_defaults() -> None:
     settings = build()
     assert [lang.code for lang in settings.language_seed] == ["en", "es", "ru", "ko", "vi", "zh"]
     assert settings.read_language == "en"
-    assert settings.classifier_min_confidence == 0.8
+    assert settings.classifier_min_confidence == 0.7
     assert settings.classifier_timeout == 3
     assert settings.translator_timeout == 20
     assert settings.slack_mode == "socket"
@@ -107,12 +107,12 @@ class TestReadLanguage:
 
 
 class TestClassifierSettings:
-    @pytest.mark.parametrize("raw", ["0", "0.5", "1"])
-    def test_accepts_confidence_from_zero_to_one(self, raw: str) -> None:
+    @pytest.mark.parametrize("raw", ["0.5", "0.7", "1"])
+    def test_accepts_a_minimum_lead_from_half_to_one(self, raw: str) -> None:
         assert build(CLASSIFIER_MIN_CONFIDENCE=raw).classifier_min_confidence == float(raw)
 
-    @pytest.mark.parametrize("raw", ["-0.1", "1.1", "high"])
-    def test_rejects_confidence_outside_the_range(self, raw: str) -> None:
+    @pytest.mark.parametrize("raw", ["0.49", "0", "-0.1", "1.01", "high"])
+    def test_rejects_a_minimum_lead_outside_the_range(self, raw: str) -> None:
         assert rejected_keys(CLASSIFIER_MIN_CONFIDENCE=raw) == ["CLASSIFIER_MIN_CONFIDENCE"]
 
     @pytest.mark.parametrize("raw", ["0.1", "10"])

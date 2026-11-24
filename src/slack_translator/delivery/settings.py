@@ -42,8 +42,8 @@ class Settings(BaseSettings):
     )
     # CFG-03
     read_language: Annotated[LanguageCode, Field(validate_default=True)] = LanguageCode("en")
-    # CFG-04
-    classifier_min_confidence: Annotated[float, Field(ge=0, le=1)] = 0.8
+    # CFG-04: the minimum lead of the top language over the runner-up (IF-02), 0.5 to 1
+    classifier_min_confidence: Annotated[float, Field(ge=0.5, le=1)] = 0.7
     # CFG-05
     classifier_timeout: Annotated[float, Field(ge=0.1, le=10)] = 3
     # CFG-06

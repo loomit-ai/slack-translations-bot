@@ -27,6 +27,7 @@ from slack_translator.infrastructure.lingua_classifier import LinguaClassifier
 
 KOREAN = "파란 상자에 종이 별이 세 개 있어요."
 ENGLISH = "I put three paper stars in the blue box on the table yesterday."
+ENGLISH_FIXTURE = "I put three paper stars in the blue box."
 
 
 @dataclass
@@ -62,15 +63,17 @@ async def real_harness() -> AsyncIterator[RealHarness]:
         {
             **SETTINGS,
             "TRANSLATOR_BASE_URL": translator.base_url,
-            # Lingua scores a plain English sentence around 0.65 over all 75 languages, so the
-            # 0.8 default never says "already in English". The decision-4 test will set the value.
-            "CLASSIFIER_MIN_CONFIDENCE": "0.5",
+            # Real Lingua loads its models on first use, which can pass the 0.1 s of the other
+            # harness; the deadline is not what these tests are about.
+            "CLASSIFIER_TIMEOUT": "3",
         }
     )
+    classifier = LinguaClassifier(telemetry=telemetry, clock=FakeClock(), timeout=3.0)
+    await classifier.preload()
     app = create_app(
         settings,
         Overrides(
-            classifier=LinguaClassifier(telemetry=telemetry, clock=FakeClock(), timeout=3.0),
+            classifier=classifier,
             telemetry=telemetry,
             clock=FakeClock(),
             log_guard=lambda: None,
@@ -107,6 +110,15 @@ async def test_an_english_message_is_recognised_and_never_sent_to_the_translator
     real: RealHarness,
 ) -> None:
     [post] = await real.shortcut(ENGLISH)
+    assert post["text"] == "This message is already in English."
+    assert real.translator.requests == []
+
+
+async def test_the_test_plan_english_fixture_is_already_in_english_at_the_default(
+    real: RealHarness,
+) -> None:
+    [post] = await real.shortcut(ENGLISH_FIXTURE)
+
     assert post["text"] == "This message is already in English."
     assert real.translator.requests == []
 

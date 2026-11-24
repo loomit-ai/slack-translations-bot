@@ -3,7 +3,8 @@
 The only module that imports `lingua`. The decision set is every language Lingua supports, so a
 language outside `candidates` can come back as `other` instead of being forced into a candidate.
 Nothing loads at import. Detection runs in worker threads, at most `max_in_flight` at once, under
-a deadline of `CLASSIFIER_TIMEOUT`. Text is never stored or logged.
+a deadline of `CLASSIFIER_TIMEOUT`. Text is never stored or logged. `confidence` is the lead of the
+top language over the runner-up (decision 4, CR-10), not Lingua's raw top value.
 """
 
 import asyncio
@@ -11,6 +12,7 @@ import importlib.metadata
 import threading
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
+from math import isfinite
 from typing import Final
 
 from lingua import LanguageDetector, LanguageDetectorBuilder
@@ -25,7 +27,7 @@ Scorer = Callable[[str], Sequence[tuple[str, float]]]
 
 DEFAULT_MAX_IN_FLIGHT: Final = 4
 
-# Lingua's own confidence differs in the 15th decimal between identical calls. Rounding keeps
+# Lingua's own values differ in the 15th decimal between identical calls. Rounding the lead keeps
 # IF-02's "same text, same result" and keeps a threshold check from flipping on noise.
 CONFIDENCE_DECIMALS: Final = 6
 
@@ -137,13 +139,19 @@ class LinguaClassifier:
 def _to_detection(
     ranked: Sequence[tuple[str, float]], candidates: Sequence[LanguageCandidate]
 ) -> Detection:
-    """The top language if it is a candidate, otherwise `other`. No signal is `other` at 0.0."""
+    """CR-10: `confidence` is the lead of the top language, top / (top + second).
+
+    It runs from 0.5 (a tie) to 1.0 (no rival). A missing or zero second value is 1.0. Nothing
+    ranked, a top of 0 or a value that is not a number is `other` at 0.0. A top language outside
+    `candidates` is `other` with the same lead.
+    """
     if not ranked:
         return Detection(language="other", confidence=0.0)
-    code, value = ranked[0]
-    confidence = round(min(max(value, 0.0), 1.0), CONFIDENCE_DECIMALS)
-    if confidence == 0.0:
+    code, top = ranked[0]
+    second = ranked[1][1] if len(ranked) > 1 else 0.0
+    if not (isfinite(top) and isfinite(second)) or top <= 0:
         return Detection(language="other", confidence=0.0)
+    confidence = 1.0 if second <= 0 else round(top / (top + second), CONFIDENCE_DECIMALS)
     if any(candidate.code == code for candidate in candidates):
         return Detection(language=LanguageCode(code), confidence=confidence)
     return Detection(language="other", confidence=confidence)
