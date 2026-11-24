@@ -388,6 +388,7 @@ The build is complete when each of these is shown in a test Slack Connect channe
 21. A repeated delivery of the same event creates no second offer.
 22. After a restart, the language list and authorized members are intact, and a click on a draft from before the restart reports it as expired.
 23. Logs contain no message text, translation or draft, and the tokens object cannot be read without the KMS key.
+24. Only X3M members get anything from the bot. A person of the X3M workspace whose Slack email is at another domain, a Slack Connect person from another organisation, and a person whose membership lookup fails all get no response to the message shortcut, Retry or an offer click, and receive no offers. A failed lookup counts as not a member. Each case is counted, and no email address or domain appears in the logs.
 
 ## Assumptions and open decisions
 
