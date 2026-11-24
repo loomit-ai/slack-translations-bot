@@ -115,6 +115,8 @@ class TranslateMessage:
         self._telemetry = telemetry
 
     async def run(self, request: TranslateRequest) -> None:
+        if not await self._admit(request):
+            return
         self._telemetry.translate_requested(
             entry=request.entry,
             correlation_id=request.correlation_id,
@@ -132,6 +134,26 @@ class TranslateMessage:
             )
             await self._finish(request, self._failure(request), "failed", None, None)
 
+    async def _admit(self, request: TranslateRequest) -> bool:
+        """The boundary checks (REQ-04, REQ-05). Only a request that passes them is counted.
+
+        Until the actor is confirmed as an X3M member, nothing is shown to them, whatever fails:
+        an outsider gets no error and no Retry (decision 19).
+        """
+        try:
+            internal = await self._actor_is_internal(request)
+        except Exception as error:
+            self._unexpected(request, error)
+            return False
+        if not internal:
+            self._refuse(request, "workspace")
+            return False
+        if not channel_is_allowed(request.channel, self._policy.allowlist):
+            self._refuse(request, "channel")
+            await self._deliver(request, ChannelNotAllowed())
+            return False
+        return True
+
     def retry_notice(self, request: TranslateRequest) -> Callable[[ModelError], Awaitable[None]]:
         """What to show while the translator retries after a failed first attempt.
 
@@ -146,15 +168,6 @@ class TranslateMessage:
         return notice
 
     async def _run(self, request: TranslateRequest) -> None:
-        if not await self._actor_is_internal(request):
-            self._refuse(request, "workspace")
-            return
-
-        if not channel_is_allowed(request.channel, self._policy.allowlist):
-            self._refuse(request, "channel")
-            await self._deliver(request, ChannelNotAllowed())
-            return
-
         text = request.text
         if text is None:
             source = await self._reader.fetch(request.ref)

@@ -418,3 +418,39 @@ class TestRegressionsFromQA:
         assert "Showing the first" not in "".join(sections)
         assert len(post["blocks"]) <= 50
         assert len(post["text"]) <= 40_000
+
+
+class TestArchitectReview:
+    async def test_a_request_is_counted_only_after_the_boundary_checks(self, h: Harness) -> None:
+        await h.deliver_and_settle(shortcut(h, user_team="T0OTHER"))
+        await h.deliver_and_settle(shortcut(h, channel="C0OTHERXYZ"))
+        assert h.telemetry.named("translate_requested") == []
+
+        await h.deliver_and_settle(shortcut(h))
+        assert len(h.telemetry.named("translate_requested")) == 1
+
+    @pytest.mark.parametrize("listener", ["translate_message", "translate_retry"])
+    async def test_a_failure_before_the_actor_is_confirmed_shows_nothing(
+        self, h: Harness, listener: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def explode(*_: object) -> bool:
+            raise RuntimeError("secret text must not be logged")
+
+        monkeypatch.setattr("slack_translator.actions.translate_message.actor_is_internal", explode)
+        h.slack.add_message(CHANNEL, TS, KOREAN)
+        url = h.slack.response_url()
+        payload = (
+            shortcut_payload(response_url=url)
+            if listener == "translate_message"
+            else retry_payload(response_url=url)
+        )
+
+        response = await h.deliver_and_settle(payload)
+
+        assert response is not None and response.status == 200
+        assert h.slack.calls_of_kind("private_write") == []
+        assert h.classifier.calls == [] and h.translator.calls == []
+        assert h.telemetry.named("translate_requested") == []
+        [event] = h.telemetry.named("internal_error")
+        assert event.fields["exception_type"] == "RuntimeError"
+        assert "secret" not in repr(event)

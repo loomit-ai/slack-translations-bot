@@ -35,6 +35,7 @@ from slack_translator.delivery.views.presenter import SlackReadPresenter
 from slack_translator.domain.ports import Clock, LanguageClassifier, Telemetry, Translator
 from slack_translator.infrastructure.slack_gateway import SlackGateway
 from slack_translator.infrastructure.system_clock import SystemClock
+from slack_translator.infrastructure.telemetry import LogTelemetry
 
 SLACK_API = "https://slack.com/api/"
 SHUTDOWN_GRACE = 10.0
@@ -48,6 +49,7 @@ class Overrides:
     translator: Translator | None = None
     telemetry: Telemetry | None = None
     clock: Clock | None = None
+    log_guard: Callable[[], None] | None = None
     slack_api_base_url: str = SLACK_API
 
 
@@ -96,6 +98,7 @@ class Application:
         listener_names: tuple[str, ...],
         preloads: list[Callable[[], Awaitable[None]]],
         closers: list[Callable[[], Awaitable[None]]],
+        log_guard: Callable[[], None],
     ) -> None:
         self.settings = settings
         self.bolt = bolt
@@ -109,6 +112,7 @@ class Application:
         self._authorization = authorization
         self._preloads = preloads
         self._closers = closers
+        self._log_guard = log_guard
 
     async def prepare(self) -> None:
         """Load models, then `auth.test` and the channel checks. Fails if the workspace is unknown.
@@ -127,9 +131,7 @@ class Application:
         self._telemetry.startup_ready()
 
     async def run(self) -> None:
-        guard_loggers = getattr(self._telemetry, "guard_third_party_loggers", None)
-        if callable(guard_loggers):
-            guard_loggers()
+        self._log_guard()
         await self.prepare()
         registry = getattr(self._telemetry, "registry", None)
         runner = web.AppRunner(build_health_app(self.readiness, registry))
@@ -164,6 +166,13 @@ class Application:
         except SlackApiError:
             return False
         return bool((info.get("channel") or {}).get("is_member"))
+
+
+def _log_guard_of(telemetry: Telemetry) -> Callable[[], None]:
+    """The third-party log guard (LOG-03). Startup fails if the telemetry cannot provide one."""
+    if isinstance(telemetry, LogTelemetry):
+        return telemetry.guard_third_party_loggers
+    raise TypeError("this telemetry adapter has no log guard; pass Overrides.log_guard")
 
 
 def create_app(settings: Settings, overrides: Overrides | None = None) -> Application:
@@ -229,6 +238,7 @@ def create_app(settings: Settings, overrides: Overrides | None = None) -> Applic
             clock=clock,
         ),
     )
+    log_guard = overrides.log_guard or _log_guard_of(telemetry)
     preloads: list[Callable[[], Awaitable[None]]] = []
     if isinstance(classifier, _Preloadable):
         preloads.append(classifier.preload)
@@ -247,4 +257,5 @@ def create_app(settings: Settings, overrides: Overrides | None = None) -> Applic
         listener_names,
         preloads,
         closers,
+        log_guard,
     )

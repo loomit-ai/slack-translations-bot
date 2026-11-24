@@ -73,6 +73,7 @@ async def real_harness() -> AsyncIterator[RealHarness]:
             classifier=LinguaClassifier(telemetry=telemetry, clock=FakeClock(), timeout=3.0),
             telemetry=telemetry,
             clock=FakeClock(),
+            log_guard=lambda: None,
             slack_api_base_url=slack.api_base_url,
         ),
     )

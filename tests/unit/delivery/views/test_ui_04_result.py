@@ -104,3 +104,47 @@ def test_a_translation_beyond_every_limit_says_so_instead_of_cutting_silently() 
     assert f"of {len(text)} characters" in last
     assert len(message.blocks) <= 50
     assert len(message.text) <= 40_000
+
+
+def test_the_translation_is_verbatim_so_a_bare_url_does_not_become_a_live_link() -> None:
+    message = result_message("English translation", "see https://evil.example now #general")
+    heading, body = message.blocks
+    assert body["text"]["verbatim"] is True
+    assert "verbatim" not in heading["text"]
+
+
+def test_every_section_of_a_long_translation_is_verbatim() -> None:
+    text = "".join(f"Line {i}: the blue box is on the table.\n" for i in range(300))
+    message = result_message("English translation", text)
+    bodies = [block for block in message.blocks[1:] if block["type"] == "section"]
+    assert len(bodies) > 1
+    assert all(block["text"]["verbatim"] is True for block in bodies)
+
+
+def test_alternating_short_and_near_limit_lines_stay_within_the_block_limit() -> None:
+    text = ("a\n" + "b" * 2999 + "\n") * 25
+    message = result_message("English translation", text)
+    assert len(message.blocks) <= 50
+    sections = section_texts(message.blocks)
+    assert "".join(sections[1:]) == text
+    assert "Showing the first" not in "".join(sections)
+
+
+@pytest.mark.parametrize(
+    "line", ["a\n" + "b" * 2999 + "\n", "x " * 1499 + "\n", "c" * 1501 + "\n", "d" * 3000 + "\n"]
+)
+def test_the_block_count_stays_bounded_for_any_line_pattern(line: str) -> None:
+    text = line * 40
+    message = result_message("English translation", text)
+    assert len(message.blocks) <= 50
+    shown = "".join(section_texts(message.blocks)[1:])
+    if "Showing the first" not in shown:
+        assert shown == text
+
+
+def test_more_sections_than_fit_are_cut_with_a_notice_that_counts_the_characters() -> None:
+    text = ("c" * 1501 + "\n") * 120
+    message = result_message("English translation", text)
+    assert len(message.blocks) <= 50
+    last = section_texts(message.blocks)[-1]
+    assert "Showing the first" in last and f"of {len(text)} characters" in last

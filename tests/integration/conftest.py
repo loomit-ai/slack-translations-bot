@@ -82,6 +82,7 @@ async def harness() -> AsyncIterator[Harness]:
             translator=translator,
             telemetry=telemetry,
             clock=clock,
+            log_guard=lambda: None,
             slack_api_base_url=slack.api_base_url,
         ),
     )
