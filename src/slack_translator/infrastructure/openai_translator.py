@@ -1,7 +1,7 @@
 """IF-03 · `Translator` over an OpenAI-style `/chat/completions` endpoint (ADR-003, flow step 9).
 
-The only module that calls the translator. It makes one attempt; `RetryingTranslator` adds the
-retry. It never logs and never puts the provider's answer or the request into an error: a
+The only module that calls the translator. It makes one attempt; the action makes the one
+retry (CR-05). It never logs and never puts the provider's answer or the request into an error: a
 failure is one `ModelError` with a fixed sentence, and one `ModelCallRecord` goes to telemetry.
 """
 
@@ -19,10 +19,10 @@ from urllib.parse import urlsplit
 import httpx
 from pydantic import SecretStr
 
+from slack_translator.domain.call_context import current_attempt
 from slack_translator.domain.errors import ModelCallRecord, ModelError, ModelErrorCategory
 from slack_translator.domain.languages import SUPPORTED_LANGUAGES, LanguageCode
 from slack_translator.domain.ports import Clock, Telemetry
-from slack_translator.infrastructure.call_context import current_attempt
 
 PROMPT_VERSION: Final = "step9-v1"
 

@@ -17,9 +17,9 @@ from tests.support.fake_translator import (
 )
 from tests.support.model_fakes import RecordingTelemetry, SteppingClock
 
+from slack_translator.domain.call_context import attempt_scope
 from slack_translator.domain.errors import ModelError, ModelErrorCategory
 from slack_translator.domain.languages import LanguageCode
-from slack_translator.infrastructure.call_context import attempt_scope
 from slack_translator.infrastructure.openai_translator import PROMPT_VERSION, OpenAITranslator
 
 KOREAN = "파란 상자에 종이 별이 세 개 있어요."

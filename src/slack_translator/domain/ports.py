@@ -51,7 +51,8 @@ class LanguageClassifier(Protocol):
 class Translator(Protocol):
     """IF-03. `target_language` is a BCP 47 tag such as `en`, `ko` or `zh-Hans`.
 
-    Raises `ModelError` on failure. Retrying is not the adapter's job (see `RetryingTranslator`).
+    Raises `ModelError` on failure. Retrying is not the adapter's job: the action makes the one
+    retry (`domain/retry.py`).
     """
 
     async def translate(

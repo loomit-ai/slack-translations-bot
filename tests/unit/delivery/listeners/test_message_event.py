@@ -14,8 +14,8 @@ from tests.support.fake_ports import RecordingTelemetry
 
 from slack_translator.delivery.background import TaskRegistry
 from slack_translator.delivery.listeners.message_event import NAME, parse_message_event, register
+from slack_translator.domain.call_context import current_correlation_id
 from slack_translator.domain.intake import MessageEvent
-from slack_translator.infrastructure.call_context import current_correlation_id
 
 CHANNEL = "C0123ABCDE"
 

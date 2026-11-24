@@ -9,7 +9,6 @@ from slack_translator.delivery.settings import Settings
 from slack_translator.domain.ports import Clock, LanguageClassifier, Telemetry, Translator
 from slack_translator.infrastructure.lingua_classifier import LinguaClassifier
 from slack_translator.infrastructure.openai_translator import OpenAITranslator
-from slack_translator.infrastructure.retrying_translator import RetryingTranslator
 from slack_translator.infrastructure.telemetry import LogTelemetry
 
 
@@ -26,15 +25,13 @@ def build_classifier(settings: Settings, telemetry: Telemetry, clock: Clock) -> 
 
 
 def build_translator(settings: Settings, telemetry: Telemetry, clock: Clock) -> Translator:
-    return RetryingTranslator(
-        OpenAITranslator(
-            base_url=settings.translator_base_url,
-            model=settings.translator_model,
-            api_key=settings.translator_api_key,
-            timeout=settings.translator_timeout,
-            telemetry=telemetry,
-            clock=clock,
-            extra_body=settings.translator_extra_body,
-        ),
+    """One attempt per call. The one retry belongs to the action (CR-05)."""
+    return OpenAITranslator(
+        base_url=settings.translator_base_url,
+        model=settings.translator_model,
+        api_key=settings.translator_api_key,
+        timeout=settings.translator_timeout,
+        telemetry=telemetry,
         clock=clock,
+        extra_body=settings.translator_extra_body,
     )

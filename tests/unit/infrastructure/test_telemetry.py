@@ -10,8 +10,8 @@ from typing import Any
 import pytest
 from prometheus_client import generate_latest
 
+from slack_translator.domain.call_context import correlation_scope
 from slack_translator.domain.errors import ModelCallRecord
-from slack_translator.infrastructure.call_context import correlation_scope
 from slack_translator.infrastructure.telemetry import LogTelemetry
 
 # LOG-01: the only fields a line may carry.

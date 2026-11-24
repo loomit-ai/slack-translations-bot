@@ -265,6 +265,7 @@ def create_app(settings: Settings, overrides: Overrides | None = None) -> Applic
         served=gateway,
         presenter=presenter,
         telemetry=telemetry,
+        clock=clock,
     )
     send_offers = SendOffers(
         policy=policy,

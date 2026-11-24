@@ -18,6 +18,7 @@ from typing import Any, Final, Literal
 
 from prometheus_client import CollectorRegistry, Counter, Histogram
 
+from slack_translator.domain.call_context import current_correlation_id
 from slack_translator.domain.errors import ErrorCategory, ModelCallRecord
 from slack_translator.domain.languages import SUPPORTED_LANGUAGES
 from slack_translator.domain.ports import (
@@ -29,7 +30,6 @@ from slack_translator.domain.ports import (
     SlackCallOutcome,
     TranslateOutcome,
 )
-from slack_translator.infrastructure.call_context import current_correlation_id
 
 LogSink = Callable[[str], None]
 

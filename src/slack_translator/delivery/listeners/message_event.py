@@ -13,9 +13,9 @@ from slack_bolt.async_app import AsyncApp
 
 from slack_translator.actions.classify_message import ClassifyMessage
 from slack_translator.delivery.background import TaskRegistry
+from slack_translator.domain.call_context import correlation_scope
 from slack_translator.domain.intake import MessageEvent
 from slack_translator.domain.ports import Telemetry
-from slack_translator.infrastructure.call_context import correlation_scope
 
 NAME = "message_event"
 

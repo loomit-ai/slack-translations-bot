@@ -1,4 +1,4 @@
-"""FLOW-01 with the real adapters: Lingua, the translator and the retry wrapper.
+"""FLOW-01 with the real adapters: Lingua and the translator, with the action making the retry.
 
 They run against the fake translator endpoint (TS-02) and the fake Slack (TS-01).
 Made-up text only.
@@ -17,6 +17,7 @@ from tests.support.fake_translator import (
     Answer,
     Fail,
     FakeTranslatorServer,
+    Malformed,
     obey_injected_instructions,
 )
 from tests.support.payloads import CHANNEL, MEMBER, TS, retry_payload, shortcut_payload
@@ -176,3 +177,59 @@ async def test_the_menu_path_shows_no_note_while_the_translator_retries(
     assert [post["text"] for post in posts] == [
         "English translation from Korean\nThree paper stars."
     ]
+
+
+FAILED = "We couldn’t translate this message. Retry translation."
+
+
+@pytest.mark.parametrize(
+    "first",
+    [
+        Fail(429, retry_after=1),
+        Fail(500),
+        Fail(503),
+        Malformed("empty_content"),
+        Malformed("no_choices"),
+        Malformed("truncated"),
+        Malformed("object_finish_reason"),
+        Malformed("list_finish_reason"),
+        Malformed("number_finish_reason"),
+    ],
+)
+async def test_a_first_failure_then_success_gives_one_result_after_exactly_one_retry(
+    real: RealHarness, first: Fail | Malformed
+) -> None:
+    real.translator.enqueue(first, Answer(text="Three paper stars."))
+
+    posts = await real.shortcut(KOREAN)
+
+    assert [post["text"] for post in posts] == [
+        "English translation from Korean\nThree paper stars."
+    ]
+    assert len(real.translator.requests) == 2
+    records = [e.fields["record"] for e in real.telemetry.named("model_call")]
+    assert [r.attempt for r in records if r.operation == "translate"] == [1, 2]
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [Fail(429), Fail(502), Malformed("not_json"), Malformed("object_finish_reason")],
+)
+async def test_two_failures_make_one_retry_and_end_in_the_error_with_retry(
+    real: RealHarness, fault: Fail | Malformed
+) -> None:
+    real.translator.set_default(fault)
+
+    posts = await real.shortcut(KOREAN)
+
+    assert [post["text"] for post in posts] == [FAILED]
+    assert len(real.translator.requests) == 2
+
+
+async def test_a_rejected_request_is_sent_once(real: RealHarness) -> None:
+    real.translator.set_default(Fail(401))
+
+    posts = await real.shortcut(KOREAN)
+
+    assert [post["text"] for post in posts] == [FAILED]
+    assert len(real.translator.requests) == 1

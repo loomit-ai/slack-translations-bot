@@ -18,11 +18,11 @@ from tests.support.payloads import (
 )
 
 from slack_translator.delivery.app import MissingScope
+from slack_translator.domain.call_context import current_attempt
 from slack_translator.domain.detection import Detection
 from slack_translator.domain.errors import ModelError, ModelErrorCategory
 from slack_translator.domain.languages import LanguageCode
 from slack_translator.domain.messages import MessageRef, OfferRequest
-from slack_translator.infrastructure.call_context import current_retry_notice
 
 KOREAN = "파란 상자는 어디에 있나요?"
 TIMEOUT = ModelError(ModelErrorCategory.TIMEOUT, "translate")
@@ -244,7 +244,7 @@ class TestFailureAndRetry:
     async def test_retry_reads_the_message_again_and_replaces_the_error_in_place(
         self, h: Harness
     ) -> None:
-        h.translator.script = [TIMEOUT, "Where is the blue box?"]
+        h.translator.script = [TIMEOUT, TIMEOUT, "Where is the blue box?"]
         await h.deliver_and_settle(shortcut(h, text=KOREAN))
         value = button_value(response_url_posts(h)[0])
         h.slack.add_message(CHANNEL, TS, KOREAN)
@@ -473,33 +473,182 @@ class TestArchitectReview:
         assert "secret" not in repr(event)
 
 
-class TestRetryNoteTiming:
-    async def test_a_slow_note_never_delays_the_provider_retry_or_replaces_the_result(
+RATE_LIMITED = ModelError(ModelErrorCategory.RATE_LIMITED, "translate", 429)
+BLUE_BOX = "Where is the blue box?"
+RESULT = f"English translation from Korean\n{BLUE_BOX}"
+FAILED = "We couldn’t translate this message. Retry translation."
+
+
+class TestTheOneRetry:
+    """CR-05: the action makes the one retry, and shows the error note beside it on Retry."""
+
+    @pytest.mark.parametrize(
+        "category",
+        [
+            ModelErrorCategory.TIMEOUT,
+            ModelErrorCategory.RATE_LIMITED,
+            ModelErrorCategory.UNAVAILABLE,
+            ModelErrorCategory.INVALID_RESPONSE,
+        ],
+    )
+    async def test_a_transient_failure_gets_one_more_try_after_a_short_pause(
+        self, h: Harness, category: ModelErrorCategory
+    ) -> None:
+        attempts: list[int] = []
+
+        async def note_attempt() -> None:
+            attempts.append(current_attempt())
+
+        h.translator.on_call = note_attempt
+        h.translator.script = [ModelError(category, "translate"), BLUE_BOX]
+
+        await h.deliver_and_settle(shortcut(h))
+
+        assert len(h.translator.calls) == 2
+        assert attempts == [1, 2]
+        [pause] = h.clock.slept
+        assert 0.3 <= pause <= 1.0
+        assert [post["text"] for post in response_url_posts(h)] == [RESULT]
+
+    async def test_an_empty_first_answer_is_retried_like_any_unusable_answer(
+        self, h: Harness
+    ) -> None:
+        h.translator.script = ["  ", BLUE_BOX]
+
+        await h.deliver_and_settle(shortcut(h))
+
+        assert len(h.translator.calls) == 2
+        assert [post["text"] for post in response_url_posts(h)] == [RESULT]
+
+    async def test_a_short_retry_after_is_the_pause(self, h: Harness) -> None:
+        h.translator.script = [
+            ModelError(ModelErrorCategory.RATE_LIMITED, "translate", 429, 2.0),
+            BLUE_BOX,
+        ]
+
+        await h.deliver_and_settle(shortcut(h))
+
+        assert h.clock.slept == [2.0]
+        assert len(h.translator.calls) == 2
+
+    async def test_a_retry_after_over_five_seconds_means_no_second_attempt(
+        self, h: Harness
+    ) -> None:
+        h.translator.script = [
+            ModelError(ModelErrorCategory.UNAVAILABLE, "translate", 503, 5.01),
+            BLUE_BOX,
+        ]
+
+        await h.deliver_and_settle(shortcut(h))
+
+        assert len(h.translator.calls) == 1
+        assert h.clock.slept == []
+        assert [post["text"] for post in response_url_posts(h)] == [FAILED]
+
+    async def test_a_failure_that_cannot_improve_is_not_retried(self, h: Harness) -> None:
+        h.translator.script = [ModelError(ModelErrorCategory.REJECTED, "translate", 401), BLUE_BOX]
+
+        await h.deliver_and_settle(shortcut(h))
+
+        assert len(h.translator.calls) == 1
+        assert [post["text"] for post in response_url_posts(h)] == [FAILED]
+
+    async def test_two_failures_make_exactly_two_calls_and_end_in_the_error_with_retry(
+        self, h: Harness
+    ) -> None:
+        h.translator.script = [TIMEOUT, RATE_LIMITED, BLUE_BOX]
+
+        await h.deliver_and_settle(shortcut(h))
+
+        assert len(h.translator.calls) == 2
+        assert [post["text"] for post in response_url_posts(h)] == [FAILED]
+        assert [e.fields["outcome"] for e in h.telemetry.named("translate_completed")] == ["failed"]
+
+    async def test_an_unexpected_exception_is_not_retried(self, h: Harness) -> None:
+        h.translator.script = [RuntimeError("secret text must not be logged"), BLUE_BOX]
+
+        await h.deliver_and_settle(shortcut(h))
+
+        assert len(h.translator.calls) == 1
+        assert [post["text"] for post in response_url_posts(h)] == [FAILED]
+        [event] = h.telemetry.named("internal_error")
+        assert event.fields["exception_type"] == "RuntimeError"
+        assert "secret" not in repr(event)
+
+    @pytest.mark.parametrize("h", [{"TRANSLATOR_TIMEOUT": "1"}], indirect=True)
+    async def test_a_translator_that_ignores_its_deadline_is_stopped_and_retried(
+        self, h: Harness, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("slack_translator.actions.translate_message.ATTEMPT_MARGIN", -0.95)
+        h.translator.script = [BLUE_BOX]
+        h.translator.hold = asyncio.Event()
+
+        await h.deliver_and_settle(shortcut(h))
+
+        assert len(h.translator.calls) == 2
+        assert [post["text"] for post in response_url_posts(h)] == [FAILED]
+
+    async def test_the_note_is_shown_on_the_retry_path_before_the_result(self, h: Harness) -> None:
+        h.slack.add_message(CHANNEL, TS, KOREAN)
+        h.translator.script = [RATE_LIMITED, BLUE_BOX]
+
+        await h.deliver_and_settle(retry_payload(response_url=h.slack.response_url()))
+
+        assert [post["text"] for post in response_url_posts(h)] == [
+            "Translating…",
+            "An error has occurred…",
+            RESULT,
+        ]
+        h.slack.assert_no_public_writes()
+
+    async def test_after_two_failures_the_note_is_followed_by_the_final_error(
+        self, h: Harness
+    ) -> None:
+        h.slack.add_message(CHANNEL, TS, KOREAN)
+        h.translator.script = [TIMEOUT]
+
+        await h.deliver_and_settle(retry_payload(response_url=h.slack.response_url()))
+
+        assert [post["text"] for post in response_url_posts(h)] == [
+            "Translating…",
+            "An error has occurred…",
+            FAILED,
+        ]
+
+    async def test_a_note_that_cannot_be_delivered_does_not_stop_the_retry(
+        self, h: Harness
+    ) -> None:
+        h.slack.add_message(CHANNEL, TS, KOREAN)
+        h.slack.delay_next(RESPONSE_URL, 0)  # "Translating…"
+        h.slack.fail_next(RESPONSE_URL, "expired_url")  # the note
+        h.translator.script = [RATE_LIMITED, BLUE_BOX]
+
+        await h.deliver_and_settle(retry_payload(response_url=h.slack.response_url()))
+
+        assert len(h.translator.calls) == 2
+        assert response_url_posts(h)[-1]["text"] == RESULT
+
+    async def test_a_slow_note_never_delays_the_retry_or_replaces_the_result(
         self, h: Harness
     ) -> None:
         h.slack.add_message(CHANNEL, TS, KOREAN)
         h.slack.delay_next(RESPONSE_URL, 0)  # "Translating…"
         h.slack.delay_next(RESPONSE_URL, 0.8)  # the error note, slow
-        marks: dict[str, float] = {}
+        started: list[float] = []
 
-        async def first_attempt_fails_then_the_provider_pauses() -> None:
-            if len(h.translator.calls) > 1:
-                return
-            notice = current_retry_notice()
-            assert notice is not None
-            started = time.perf_counter()
-            await notice(ModelError(ModelErrorCategory.RATE_LIMITED, "translate", 429))
-            await asyncio.sleep(0.2)  # the provider's retry pause
-            marks["until_second_attempt"] = time.perf_counter() - started
+        async def mark() -> None:
+            started.append(time.perf_counter())
 
-        h.translator.on_call = first_attempt_fails_then_the_provider_pauses
+        h.translator.on_call = mark
+        h.translator.script = [RATE_LIMITED, BLUE_BOX]
+
         await h.deliver_and_settle(retry_payload(response_url=h.slack.response_url()))
 
-        assert marks["until_second_attempt"] < 0.5
+        assert started[1] - started[0] < 0.5
         assert [post["text"] for post in response_url_posts(h)] == [
             "Translating…",
             "An error has occurred…",
-            "English translation from Korean\nWhere is the blue box?",
+            RESULT,
         ]
         h.slack.assert_no_public_writes()
 

@@ -5,12 +5,14 @@ output (ADR-006); a customer sees nothing on any path, errors included.
 """
 
 import asyncio
-from collections.abc import Awaitable, Callable
+import random
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Literal
+from typing import Final, Literal
 
 from slack_translator.domain.action_values import ActionValue, encode
 from slack_translator.domain.boundary import channel_is_allowed, membership
+from slack_translator.domain.call_context import attempt_scope
 from slack_translator.domain.detection import (
     AlreadyRead,
     Detection,
@@ -19,6 +21,7 @@ from slack_translator.domain.detection import (
 )
 from slack_translator.domain.errors import (
     ModelError,
+    ModelErrorCategory,
     ResponseUrlUnusable,
     SlackDeliveryError,
 )
@@ -38,6 +41,7 @@ from slack_translator.domain.messages import (
 )
 from slack_translator.domain.ports import (
     ClassifyResult,
+    Clock,
     LanguageClassifier,
     MemberDirectory,
     MessageReader,
@@ -49,12 +53,16 @@ from slack_translator.domain.ports import (
     TranslateOutcome,
     Translator,
 )
+from slack_translator.domain.retry import retry_pause
 from slack_translator.domain.text import (
     MIN_LETTERS,
     clean_for_detection,
     letter_count,
     neutralize_controls,
 )
+
+# Room beyond TRANSLATOR_TIMEOUT before the action stops waiting for one attempt (REQ-10).
+ATTEMPT_MARGIN: Final = 3.0
 
 
 class HomeWorkspace:
@@ -107,6 +115,8 @@ class TranslateMessage:
         served: ServedChannels,
         presenter: ReadPresenter,
         telemetry: Telemetry,
+        clock: Clock,
+        uniform: Callable[[float, float], float] = random.uniform,
     ) -> None:
         self._policy = policy
         self._home = home
@@ -118,7 +128,8 @@ class TranslateMessage:
         self._served = served
         self._presenter = presenter
         self._telemetry = telemetry
-        self._notices: dict[str, list[asyncio.Task[bool]]] = {}
+        self._clock = clock
+        self._uniform = uniform
 
     async def run(self, request: TranslateRequest) -> None:
         if not await self._admit(request):
@@ -139,8 +150,6 @@ class TranslateMessage:
                 exception_type=type(error).__name__, correlation_id=request.correlation_id
             )
             await self._finish(request, self._failure(request), "failed", None, None)
-        finally:
-            await self._settle_notices(request)
 
     async def _admit(self, request: TranslateRequest) -> bool:
         """The boundary checks (REQ-04, REQ-05). Only a request that passes them is counted.
@@ -164,28 +173,6 @@ class TranslateMessage:
             await self._deliver(request, ChannelNotAllowed())
             return False
         return True
-
-    def retry_notice(self, request: TranslateRequest) -> Callable[[ModelError], Awaitable[None]]:
-        """What to show while the translator retries after a failed first attempt.
-
-        Only where the bot can replace its own note, which is the Retry path. On the shortcut path
-        no progress note exists, so there is nothing to update and nothing is shown.
-        """
-
-        async def notice(_: ModelError) -> None:
-            # The note is sent beside the retry, never in front of it: the provider retry must not
-            # wait for Slack. `_settle_notices` makes the result wait for the note instead, so
-            # the note can never replace the result.
-            if request.entry == "retry":
-                task = asyncio.ensure_future(self._deliver(request, ErrorNotice(), quiet=True))
-                self._notices.setdefault(request.correlation_id, []).append(task)
-
-        return notice
-
-    async def _settle_notices(self, request: TranslateRequest) -> None:
-        tasks = self._notices.pop(request.correlation_id, [])
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _run(self, request: TranslateRequest) -> None:
         text = request.text
@@ -224,7 +211,7 @@ class TranslateMessage:
         if request.entry == "retry":
             await self._deliver(request, Translating(), quiet=True)
 
-        translated = await self._translate(text, hint)
+        translated = await self._translate(request, text, hint)
         if translated is None:
             await self._finish(request, self._failure(request), "failed", None, None)
             return
@@ -300,16 +287,48 @@ class TranslateMessage:
             channel_id=request.channel,
         )
 
-    async def _translate(self, text: str, hint: LanguageCode | None) -> str | None:
-        deadline = self._policy.translator_timeout * 2 + 6
+    async def _translate(
+        self, request: TranslateRequest, text: str, hint: LanguageCode | None
+    ) -> str | None:
+        """The translation, or `None` after the one retry has failed too (CR-05, IF-03).
+
+        The first failure that can improve waits `retry_pause`, then one more attempt is made.
+        On the Retry path the error note is sent beside the retry, never in front of it: the
+        retry must not wait for Slack. The result waits for the note instead, so the note can
+        never replace the result.
+        """
+        note: asyncio.Future[bool] | None = None
+        try:
+            try:
+                return await self._attempt(text, hint)
+            except ModelError as first:
+                pause = retry_pause(first, self._uniform)
+                if pause is None:
+                    return None
+            if request.entry == "retry":
+                note = asyncio.ensure_future(self._deliver(request, ErrorNotice(), quiet=True))
+            await self._clock.sleep(pause)
+            with attempt_scope(2):
+                return await self._attempt(text, hint)
+        except ModelError:
+            return None
+        finally:
+            if note is not None:
+                await asyncio.gather(note, return_exceptions=True)
+
+    async def _attempt(self, text: str, hint: LanguageCode | None) -> str:
+        """One call. A call that outlives its deadline or answers nothing is a failed attempt."""
+        deadline = self._policy.translator_timeout + ATTEMPT_MARGIN
         try:
             async with asyncio.timeout(deadline):
                 translated = await self._translator.translate(
                     text, self._policy.read_language, hint
                 )
-        except (ModelError, TimeoutError):
-            return None
-        return translated if translated.strip() else None
+        except TimeoutError:
+            raise ModelError(ModelErrorCategory.TIMEOUT, "translate") from None
+        if not translated.strip():
+            raise ModelError(ModelErrorCategory.INVALID_RESPONSE, "translate")
+        return translated
 
     def _failure(self, request: TranslateRequest) -> TranslationFailed:
         value = ActionValue(
@@ -336,7 +355,6 @@ class TranslateMessage:
         target_language: str | None,
         language: str | None,
     ) -> None:
-        await self._settle_notices(request)
         delivered = await self._deliver(request, outcome)
         self._telemetry.translate_completed(
             entry=request.entry,
