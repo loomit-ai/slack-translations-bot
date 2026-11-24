@@ -21,7 +21,7 @@ ALLOWED_FIELDS = {
     "confidence", "target_language", "operation", "provider", "model", "prompt_version",
     "attempt", "latency_ms", "input_chars", "prompt_tokens", "completion_tokens", "outcome",
     "error_category", "http_status", "slack_method", "slack_error", "drop_reason",
-    "recipient_count", "exception_type", "refusal_reason", "logger",
+    "recipient_count", "exception_type", "refusal_reason", "logger", "channel_count",
 }  # fmt: skip
 
 # MET-01 to MET-09: the metric families the exposition must carry.
@@ -37,6 +37,7 @@ METRIC_FAMILIES = {
     "translator_slack_calls_total",
     "translator_requests_refused_total",
     "translator_ack_seconds_count",
+    "translator_channel_changes_total",
 }
 
 MOMENT = datetime(2026, 11, 24, 3, 4, 5, 678000, tzinfo=UTC)
@@ -109,6 +110,9 @@ EVERY_METHOD: list[Callable[[LogTelemetry], None]] = [
     lambda t: t.startup_ready(),
     lambda t: t.startup_channel_not_member(channel_id="C0123ABCDE"),
     lambda t: t.shutdown(),
+    lambda t: t.startup_serving(channel_count=7),
+    lambda t: t.channel_changed(change="joined", channel_id="C0123ABCDE", user_id="U1"),
+    lambda t: t.channel_changed(change="left", channel_id="C0123ABCDE", user_id=None),
     lambda t: t.request_refused(
         reason="channel", entry="shortcut", correlation_id="c1", team_id="T1",
         channel_id="C0123ABCDE",
@@ -188,6 +192,43 @@ def test_startup_and_shutdown_events() -> None:
         "startup.channel_not_member", "WARNING", "C0123ABCDE",
     )  # fmt: skip
     assert (shutdown["event"], shutdown["level"]) == ("shutdown", "INFO")
+
+
+@pytest.mark.parametrize("count", [0, 1, 40])
+def test_serving_at_startup_logs_how_many_channels_the_bot_is_in(count: int) -> None:
+    r = rig()
+
+    r.telemetry.startup_serving(channel_count=count)
+
+    [event] = r.events
+    assert (event["event"], event["level"], event["channel_count"]) == (
+        "startup.serving",
+        "INFO",
+        count,
+    )
+
+
+def test_the_bot_being_added_to_a_channel_is_logged_with_who_added_it_and_counted() -> None:
+    r = rig()
+
+    r.telemetry.channel_changed(change="joined", channel_id="C0123ABCDE", user_id="U0INVITER")
+
+    [event] = r.events
+    assert (event["event"], event["level"]) == ("channel.joined", "INFO")
+    assert (event["channel_id"], event["user_id"]) == ("C0123ABCDE", "U0INVITER")
+    assert r.count("translator_channel_changes_total", change="joined") == 1
+
+
+def test_the_bot_being_removed_from_a_channel_is_logged_without_a_person_and_counted() -> None:
+    r = rig()
+
+    r.telemetry.channel_changed(change="left", channel_id="C0123ABCDE", user_id=None)
+
+    [event] = r.events
+    assert (event["event"], event["channel_id"]) == ("channel.left", "C0123ABCDE")
+    assert "user_id" not in event
+    assert r.count("translator_channel_changes_total", change="left") == 1
+    assert r.count("translator_channel_changes_total", change="joined") is None
 
 
 @pytest.mark.parametrize(

@@ -14,7 +14,7 @@ import sys
 from collections.abc import Callable
 from datetime import UTC, datetime
 from math import isfinite
-from typing import Any, Final
+from typing import Any, Final, Literal
 
 from prometheus_client import CollectorRegistry, Counter, Histogram
 
@@ -42,7 +42,7 @@ ALLOWED_LOG_FIELDS: Final = frozenset(
         "prompt_version", "attempt", "latency_ms", "input_chars", "prompt_tokens",
         "completion_tokens", "outcome", "error_category", "http_status", "slack_method",
         "slack_error", "drop_reason", "recipient_count", "exception_type", "refusal_reason",
-        "logger",
+        "logger", "channel_count",
     }
 )  # fmt: skip
 
@@ -175,6 +175,12 @@ class LogTelemetry:
             ["reason"],
             registry=reg,
         )
+        self._channel_changes = Counter(
+            "translator_channel_changes_total",
+            "The bot being added to or removed from a channel",
+            ["change"],
+            registry=reg,
+        )
         self._ack = Histogram(
             "translator_ack_seconds",
             "Time to acknowledge a Slack interaction",
@@ -206,6 +212,20 @@ class LogTelemetry:
 
     def shutdown(self) -> None:
         self._emit("shutdown", "INFO")
+
+    def startup_serving(self, *, channel_count: int) -> None:
+        self._emit("startup.serving", "INFO", channel_count=max(channel_count, 0))
+
+    def channel_changed(
+        self, *, change: Literal["joined", "left"], channel_id: str, user_id: str | None
+    ) -> None:
+        self._channel_changes.labels(change).inc()
+        self._emit(
+            f"channel.{change}",
+            "INFO",
+            channel_id=_identifier(channel_id),
+            user_id=_identifier(user_id),
+        )
 
     # Requests and events
 
