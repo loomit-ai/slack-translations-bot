@@ -2,7 +2,7 @@
 
 Nov 23, 2026 · @Federico A. Ocampo
 
-Revised Nov 24, 2026 with decisions taken by Federico: language detection uses the Lingua library inside the bot instead of a classifier model; the bot is built in Python with Bolt for Python; there is no Copy button; users outside the X3M workspace get no response; a send that times out is never retried automatically. The sequence diagram image has not been redrawn: it still shows a classifier model and a Copy button. Later the same day: only X3M members are served (the X3M workspace itself, Slack email at x3mads.com or loomit.ai); every human message is classified, whoever wrote it; members who read a language still get its offers in the first version.
+Revised Nov 24, 2026 with decisions taken by Federico: language detection uses the Lingua library inside the bot instead of a classifier model; the bot is built in Python with Bolt for Python; there is no Copy button; users outside the X3M workspace get no response; a send that times out is never retried automatically. The sequence diagram image has not been redrawn: it still shows a classifier model and a Copy button. Later the same day: only X3M members are served (the X3M workspace itself, Slack email at x3mads.com or loomit.ai); every human message is classified, whoever wrote it; members who read a language still get its offers in the first version. Also decided that day: the bot serves the channels it has been added to, with no channel list in production; and language confidence is the lead of the top language over the runner-up.
 
 ## Purpose and scope
 
@@ -22,7 +22,7 @@ Three invariants hold on every path, error paths included:
 - **Nothing is posted in a member's name without their Send click** on the exact text shown in the preview.
 - **Only the classifier runs on every message.** It is a local library, so no message leaves Slack for detection. Translation calls happen only after a member asks.
 
-Out of scope for the first version: files, images and audio; direct messages and channels outside the allowlist; reacting to message edits or deletions; offers for team languages (English and Spanish by default); translating without a click. Also later: an "I speak {language}" button that lets a member stop offers for a language they read (planned for 1.1). Until then every X3M member gets the offer.
+Out of scope for the first version: files, images and audio; direct messages and channels the bot has not been added to; reacting to message edits or deletions; offers for team languages (English and Spanish by default); translating without a click. Also later: an "I speak {language}" button that lets a member stop offers for a language they read (planned for 1.1). Until then every X3M member gets the offer.
 
 ## Components and Slack app setup
 
@@ -68,7 +68,7 @@ Runtime configuration:
 
 | Key | Meaning | Proposed default |
 | --- | --- | --- |
-| `CHANNEL_ALLOWLIST` | Channel IDs the bot processes. The bot must also be invited to each one | Required |
+| `CHANNEL_ALLOWLIST` | Optional list that narrows the channels served. The bot serves the channels it has been added to; when this list holds channel IDs, it serves only those of them it is a member of | Empty in production. Required in development and staging, so a test build cannot start reading a real channel |
 | `SETTINGS_URI` | S3 object holding `settings.json` | `s3://<bucket>/translator/settings.json` |
 | `TOKENS_URI` | S3 object holding user tokens, encrypted with SSE-KMS. A Secrets Manager ARN also works | `s3://<bucket>/translator/tokens.json` |
 | `KMS_KEY_ID` | Key that encrypts the tokens object | Required |
@@ -89,7 +89,7 @@ The home workspace ID is read from `auth.test` at startup. Four rules apply to e
 - **Acknowledge within 3 seconds**, then run model calls and Slack calls asynchronously. Slack shows the user a timeout error otherwise ([interaction handling](https://docs.slack.dev/interactivity/handling-user-interaction)).
 - **Verify the request signature** when the app uses an HTTP endpoint.
 - **Drop duplicates.** Slack retries event deliveries, so key event processing on `event_id`.
-- **Check the boundary.** Ignore any channel outside the allowlist and any acting user who is not an X3M member. An X3M member is an active person of the home workspace itself, not a Slack Connect user from another organisation, whose Slack email domain is one of `MEMBER_EMAIL_DOMAINS`. A guest counts only if their email is at one of those domains. Everyone else, and anyone whose lookup fails or shows no email, gets an acknowledgement to Slack and no response at all; count it. An X3M member who acts in a channel outside the allowlist gets a private notice.
+- **Check the boundary.** Ignore any channel the bot does not serve and any acting user who is not an X3M member. The bot serves the channels it has been added to, narrowed by `CHANNEL_ALLOWLIST` when that is set. An X3M member is an active person of the home workspace itself, not a Slack Connect user from another organisation, whose Slack email domain is one of `MEMBER_EMAIL_DOMAINS`. A guest counts only if their email is at one of those domains. Everyone else, and anyone whose lookup fails or shows no email, gets an acknowledgement to Slack and no response at all; count it. An X3M member who acts in a channel the bot does not serve gets a private notice.
 
 ## Language configuration (Home tab)
 
@@ -182,11 +182,11 @@ Validate the file against a JSON Schema on every read and before every write. If
 
 ## Phase 1: detect and offer (steps 1 to 6)
 
-Every human message in an allowlisted channel is classified, and a result in a configured customer language produces one private offer per X3M member except the author, whether a customer or a colleague wrote the message.
+Every human message in a served channel is classified, and a result in a configured customer language produces one private offer per X3M member except the author, whether a customer or a colleague wrote the message.
 
 1. **Step 1, the customer posts.** Nothing to build. The message can be top-level or a reply inside a thread.
 2. **Step 2, message event.** Slack delivers a [`message` event](https://docs.slack.dev/reference/events/message) through `message.channels` (public) or `message.groups` (private). Continue only when all of these hold:
-   - the channel is in the allowlist;
+   - the bot serves the channel: Slack delivers message events only for channels the bot has been added to, and `CHANNEL_ALLOWLIST`, when set, narrows them further;
    - the event has no `subtype`, or the subtype is `file_share` or `thread_broadcast`, which drops edits, deletions, joins and bot posts;
    - there is no `bot_id` and `text` is not empty;
    - after removing mentions, links, emoji codes and code blocks, at least a few letters remain (proposed minimum: 3).
@@ -284,7 +284,7 @@ The bot also receives a `message` event for the reply it just posted. That reply
 - **Language:** the first argument names a configured customer language, by its English or Spanish name or its code. Normalize it to a code. For any other language or a malformed command, answer with usage help that lists the configured customer languages.
 - **Payload:** `channel_id`, `user_id`, `text`, `response_url` and `trigger_id`. Acknowledge within 3 seconds.
 - **Flow:** the command stands in for the modal, so its payload enters at step 14 and the flow continues at step 15 with no `thread_ts`. The preview goes through the command's `response_url`, which is ephemeral by default. It has the same four buttons, and Send posts at the top level of the channel.
-- **Boundary:** outside allowlisted channels, answer with an ephemeral notice and do nothing else.
+- **Boundary:** outside served channels, answer with an ephemeral notice and do nothing else.
 
 ## State, security and privacy
 
@@ -357,9 +357,9 @@ Every failure is reported privately to the member who acted, or not at all. None
 | No user token, or `token_revoked` / `invalid_auth` on send | Delete any stored token, show Authorize, keep the draft |
 | `not_in_channel`, `is_archived`, `channel_not_found` or a locked thread on send | Private error in plain words, keep the draft |
 | Reply longer than the limit | Inline error in the modal |
-| Bot not a member of an allowlisted channel | No events arrive. Check membership at startup and log a warning |
+| Bot not a member of a channel | The channel is not served: no events arrive and no offers are sent. With `CHANNEL_ALLOWLIST` set, check membership at startup and log a warning for each listed channel the bot is not in |
 | Interaction from anyone who is not an X3M member, or whose membership cannot be established | Acknowledge to Slack, show nothing, count it. The customer never sees bot output |
-| X3M member uses the shortcut or `/translate` in a channel outside the allowlist | Private notice. Nothing else happens |
+| X3M member uses the shortcut or `/translate` in a channel the bot does not serve | Private notice. Nothing else happens |
 
 ## Acceptance criteria
 
@@ -368,7 +368,7 @@ The build is complete when each of these is shown in a test Slack Connect channe
 1. A Korean message from an external member produces one private offer for each active X3M member, and nothing the customer can see.
 2. With the initial list, Russian, Vietnamese and Chinese messages also produce offers. English and Spanish messages produce none, and no translation call.
 3. A message in a language outside the list produces no offer; the shortcut still translates it.
-4. Messages in other channels, from bots, or with excluded subtypes cause no classifier call.
+4. Messages in channels the bot has not been added to (or outside `CHANNEL_ALLOWLIST` when it is set), from bots, or with excluded subtypes cause no classifier call.
 5. An admin adds Japanese as a customer language in the Home tab, and the next Japanese message gets an offer. After the admin removes it, the next Japanese message gets none.
 6. A non-admin sees the language list without controls, and a settings action sent in their name changes nothing.
 7. English cannot be removed or made a customer language, and every change appears in the history inside `settings.json`.
@@ -397,10 +397,11 @@ The points below are assumed in this spec and still need a decision from X3M, ex
 | --- | --- | --- |
 | Unsolicited offers | Step 5 sends an ephemeral message that no recipient asked for | Slack's [messaging guide](https://docs.slack.dev/messaging/) says ephemeral messages must follow a user action and never be unsolicited. The method reference lists no technical restriction. Validate in staging and accept the deviation, or fall back to the shortcut alone |
 | Copy button | **Decided Nov 24, 2026:** no Copy button. Members select the text in the message | Nothing left to decide |
-| People who are not X3M members | **Decided Nov 24, 2026:** only people of the X3M workspace itself with a Slack email at x3mads.com or loomit.ai are served. Everyone else gets no response at all. An X3M member outside the allowlist gets a private notice | Nothing left to decide |
+| People who are not X3M members | **Decided Nov 24, 2026:** only people of the X3M workspace itself with a Slack email at x3mads.com or loomit.ai are served. Everyone else gets no response at all. An X3M member in a channel the bot does not serve gets a private notice | Nothing left to decide |
 | Members who read a customer language | **Decided Nov 24, 2026:** they still get offers in the first version. Version 1.1 adds an "I speak {language}" button to stop offers for that language | Nothing left to decide |
 | A send that times out | **Decided Nov 24, 2026:** tell the member it may have been sent, and never retry automatically | Nothing left to decide |
 | Which messages are classified | **Decided Nov 24, 2026:** every human message, from customers and X3M members alike. Offers go to each X3M member except the author | Nothing left to decide |
+| Which channels are served | **Decided Nov 24, 2026:** the channels the bot has been added to. Federico adds it to the channels shared with Korean companies. No channel list in production; development and staging require one | Nothing left to decide |
 | Model choices | **Classifier decided Nov 23, 2026:** Lingua (`lingua-py`), inside the bot. **Confidence rule decided Nov 24, 2026:** the lead of the top language over the runner-up, starting at 0.7. Translator: Gemini 3.7 Flash through OpenRouter, proposed | Confirm the translator, and tune the 0.7 from a test on real messages. Federico is gathering 20 or more Korean messages written by native speakers |
 | Data leaving Slack | Customer text goes to the translation provider when a member asks. Detection is local | Confirm that customer agreements allow it, and choose a route with no training and low retention |
 | Approving unread text | The member approves, and can now edit, a translation they may not be able to read | Add a back-translation line to the preview, refreshed after each edit, at the cost of one more model call per change |
@@ -408,7 +409,7 @@ The points below are assumed in this spec and still need a decision from X3M, ex
 | Who administers languages | Workspace owners and admins, plus `APP_ADMINS` | Use `APP_ADMINS` alone if workspace admins should not control the bot |
 | Language limit | At most 20 languages | Raise it only after measuring classifier precision with a longer list |
 | Chinese script | Replies follow the customer's script; `/translate` defaults to Simplified | Confirm the default if many customers are in Taiwan or Hong Kong |
-| Scope of the settings panel | Only languages are edited there; channels stay in `CHANNEL_ALLOWLIST` | Whether to move channels and the confidence threshold to the panel later |
+| Scope of the settings panel | Only languages are edited there; channels are chosen by adding the bot to them | Whether to move channels and the confidence threshold to the panel later |
 | Storage | Settings and tokens as JSON objects in S3, drafts in memory, one replica | Accept no failover and drafts lost on each deploy, or bring back Redis for drafts if the bot needs more than one replica |
 | Guests | **Decided Nov 24, 2026:** a guest counts as an X3M member only if their Slack email is at an allowed domain. Any other guest is treated like a customer. Applies to offers and to the message shortcut | Nothing left to decide |
 | Stack and environments | **Decided Nov 23, 2026:** Python with Bolt for Python. JSON objects in S3, one replica. **Decided Nov 24, 2026:** the development and staging apps run in the X3M workspace, in a testing channel, on Socket Mode. Production: HTTP endpoint and per-user authorization rollout | How the customer side is played in the testing channel, which the acceptance criteria need to prove the customer sees nothing |
