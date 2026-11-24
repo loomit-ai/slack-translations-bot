@@ -88,7 +88,7 @@ class SlackGateway:
         if response.status_code == 429:
             self._count("response_url", "rate_limited")
             raise ResponseUrlUnusable
-        if response.status_code >= 400:
+        if not response.is_success:
             self._count("response_url", "error", slack_error=f"http_{response.status_code}")
             raise ResponseUrlUnusable
         self._count("response_url", "ok")
@@ -165,7 +165,9 @@ class SlackGateway:
             return cached
         try:
             response = await self._call("users.info", lambda: self._client.users_info(user=user_id))
-        except SlackApiError:
+        except Exception:
+            # A lookup that fails for any reason means the workspace cannot be established,
+            # and the caller refuses (REQ-05).
             return None
         user = response.get("user") or {}
         facts = UserFacts(

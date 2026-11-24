@@ -116,6 +116,10 @@ class FakeSlackServer:
         body = {"ok": False, "error": error}
         self._faults.setdefault(method, []).append(_Fault(status, body, headers))
 
+    def drop_next(self, method: str) -> None:
+        """Close the connection without answering the next call to `method`."""
+        self._faults.setdefault(method, []).append(_Fault(status=-1))
+
     def hold(self, method: str) -> asyncio.Event:
         """Make `method` wait until the returned event is set."""
         event = asyncio.Event()
@@ -150,7 +154,11 @@ class FakeSlackServer:
             await self._holds[method].wait()
         fault = self._next_fault(method)
         if fault is not None:
-            return web.json_response(fault.body, status=fault.status, headers=fault.headers)
+            if fault.status == -1 and request.transport is not None:
+                request.transport.close()
+            return web.json_response(
+                fault.body, status=max(fault.status, 200), headers=fault.headers
+            )
         return web.json_response(self._answer(method, payload))
 
     async def _response_url(self, request: web.Request) -> web.Response:

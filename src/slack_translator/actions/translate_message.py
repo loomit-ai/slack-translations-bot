@@ -213,7 +213,10 @@ class TranslateMessage:
                 team_id=request.team_id, is_bot=False, deleted=False, is_restricted=False
             )
         else:
-            facts = await self._directory.user_facts(request.user_id)
+            try:
+                facts = await self._directory.user_facts(request.user_id)
+            except Exception:
+                facts = None
         return actor_is_internal(facts, home)
 
     async def _detect(self, request: TranslateRequest, cleaned: str) -> Detection | None:

@@ -78,12 +78,29 @@ def test_a_long_translation_is_shown_whole_in_consecutive_sections() -> None:
     assert len(message.blocks) <= 50
 
 
-def test_a_translation_beyond_one_message_says_so_instead_of_cutting_silently() -> None:
+def test_a_result_the_size_of_the_largest_slack_message_is_shown_whole() -> None:
+    text = "".join(f"Line {i}: the blue box is on the table.\n" for i in range(1000))
+    assert len(text) > 36_000
+    message = result_message("English translation", text)
+    sections = section_texts(message.blocks)
+    assert "".join(sections[1:]) == text
+    assert len(message.blocks) <= 50
+    assert "Showing the first" not in "".join(sections)
+    assert len(message.text) <= 40_000
+    assert message.text.endswith("The full translation is shown in the message.")
+
+
+def test_a_fallback_that_fits_has_no_pointer_and_keeps_every_character() -> None:
+    text = "word " * 6000
+    message = result_message("English translation", text)
+    assert message.text == f"English translation\n{text}"
+
+
+def test_a_translation_beyond_every_limit_says_so_instead_of_cutting_silently() -> None:
     text = "word " * (MAX_SHOWN_CHARS // 5 + 2000)
     message = result_message("English translation", text)
     last = section_texts(message.blocks)[-1]
     assert "Showing the first" in last
     assert f"of {len(text)} characters" in last
-    assert "Showing the first" in message.text
     assert len(message.blocks) <= 50
-    assert len(message.text) < 40_000
+    assert len(message.text) <= 40_000

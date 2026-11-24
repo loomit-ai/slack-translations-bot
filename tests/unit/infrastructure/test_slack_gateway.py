@@ -53,7 +53,7 @@ async def test_a_response_url_stops_working_after_its_uses() -> None:
     assert len(seen) == RESPONSE_URL_MAX_USES
 
 
-@pytest.mark.parametrize("status", [404, 410, 429, 500])
+@pytest.mark.parametrize("status", [301, 302, 307, 404, 410, 429, 500])
 async def test_slack_refusing_a_response_url_makes_it_unusable(status: int) -> None:
     transport = httpx.MockTransport(lambda request: httpx.Response(status, text="used_url"))
     slack, _, telemetry = gateway(transport)

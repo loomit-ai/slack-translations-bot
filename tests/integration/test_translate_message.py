@@ -361,3 +361,53 @@ class TestStartup:
         assert [
             e.fields["channel_id"] for e in h.telemetry.named("startup_channel_not_member")
         ] == [CHANNEL]
+
+
+class TestRegressionsFromQA:
+    @pytest.mark.parametrize("listener", ["translate_message", "translate_retry"])
+    async def test_a_failed_workspace_lookup_is_a_counted_refusal_with_no_output(
+        self, h: Harness, listener: str
+    ) -> None:
+        h.slack.add_message(CHANNEL, TS, KOREAN)
+        for _ in range(5):  # the Slack SDK retries a dropped connection a few times
+            h.slack.drop_next("users.info")
+        url = h.slack.response_url()
+        payload = (
+            shortcut_payload(user_team=None, response_url=url)
+            if listener == "translate_message"
+            else retry_payload(user_team=None, response_url=url)
+        )
+
+        response = await h.deliver_and_settle(payload)
+
+        assert response is not None and response.status == 200
+        assert h.classifier.calls == [] and h.translator.calls == []
+        assert h.slack.calls_of_kind("private_write") == []
+        assert h.slack.calls_of("conversations.history") == []
+        assert [e.fields["reason"] for e in h.telemetry.named("request_refused")] == ["workspace"]
+        assert h.telemetry.named("internal_error") == []
+
+    @pytest.mark.parametrize("status", [301, 302, 307])
+    async def test_a_redirecting_response_url_falls_back_to_a_private_message_in_the_thread(
+        self, h: Harness, status: int
+    ) -> None:
+        h.slack.fail_next(RESPONSE_URL, "moved", status=status)
+        await h.deliver_and_settle(shortcut(h, ts="1795478400.000200", thread_ts=THREAD_ROOT))
+        [fallback] = h.slack.calls_of("chat.postEphemeral")
+        assert fallback.payload["user"] == MEMBER
+        assert fallback.payload["thread_ts"] == THREAD_ROOT
+        h.slack.assert_no_public_writes()
+
+    async def test_a_result_of_about_37_thousand_characters_is_shown_whole(
+        self, h: Harness
+    ) -> None:
+        text = "".join(f"Line {i}: the blue box is on the table.\n" for i in range(940))
+        assert 36_000 < len(text) < 40_000
+        h.translator.script = [text]
+        await h.deliver_and_settle(shortcut(h))
+        [post] = response_url_posts(h)
+        sections = [b["text"]["text"] for b in post["blocks"] if b["type"] == "section"]
+        assert "".join(sections[1:]) == text
+        assert "Showing the first" not in "".join(sections)
+        assert len(post["blocks"]) <= 50
+        assert len(post["text"]) <= 40_000
