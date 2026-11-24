@@ -1,3 +1,4 @@
+# pyright: basic
 """CR-11 · The bot being added to or removed from a channel (member_joined_channel and left).
 
 Only the bot's own joins and leaves count; every other member's are ignored without a trace. They
