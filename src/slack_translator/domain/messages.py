@@ -78,6 +78,15 @@ class PrivateMessage:
 
 
 @dataclass(frozen=True, slots=True)
+class Offer:
+    """UI-02: the private offer. `action_value` is the SLK-02 value for the button."""
+
+    source_language: str
+    reading_language: str
+    action_value: str
+
+
+@dataclass(frozen=True, slots=True)
 class Translating:
     """UI-03: shown only where the bot can replace its own note."""
 
@@ -126,7 +135,8 @@ class ChannelNotAllowed:
 
 
 ReadOutcome = (
-    Translating
+    Offer
+    | Translating
     | ErrorNotice
     | Translated
     | AlreadyInReadLanguage

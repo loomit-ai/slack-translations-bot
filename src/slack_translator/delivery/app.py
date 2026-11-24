@@ -20,6 +20,7 @@ from slack_bolt.authorization import AuthorizeResult
 from slack_sdk.errors import SlackApiError
 from slack_sdk.web.async_client import AsyncWebClient
 
+from slack_translator.actions.send_offers import SendOffers
 from slack_translator.actions.translate_message import (
     HomeWorkspace,
     TranslateMessage,
@@ -32,7 +33,13 @@ from slack_translator.delivery.listeners import register_all
 from slack_translator.delivery.listeners.context import ListenerContext
 from slack_translator.delivery.settings import Settings
 from slack_translator.delivery.views.presenter import SlackReadPresenter
-from slack_translator.domain.ports import Clock, LanguageClassifier, Telemetry, Translator
+from slack_translator.domain.ports import (
+    Clock,
+    LanguageClassifier,
+    OfferSender,
+    Telemetry,
+    Translator,
+)
 from slack_translator.infrastructure.slack_gateway import SlackGateway
 from slack_translator.infrastructure.system_clock import SystemClock
 from slack_translator.infrastructure.telemetry import LogTelemetry
@@ -100,6 +107,7 @@ class Application:
         readiness: Readiness,
         telemetry: Telemetry,
         authorization: _Authorization,
+        offers: OfferSender,
         listener_names: tuple[str, ...],
         preloads: list[Callable[[], Awaitable[None]]],
         closers: list[Callable[[], Awaitable[None]]],
@@ -110,6 +118,7 @@ class Application:
         self.registry = registry
         self.readiness = readiness
         self.listener_names = listener_names
+        self.offers = offers
         self._client = client
         self._gateway = gateway
         self._home = home
@@ -221,6 +230,7 @@ def create_app(settings: Settings, overrides: Overrides | None = None) -> Applic
         translator_timeout=settings.translator_timeout,
         member_email_domains=settings.member_email_domains,
     )
+    presenter = SlackReadPresenter(policy.read_language_name)
     translate_message = TranslateMessage(
         policy=policy,
         home=home,
@@ -229,8 +239,17 @@ def create_app(settings: Settings, overrides: Overrides | None = None) -> Applic
         responder=gateway,
         reader=gateway,
         directory=gateway,
-        presenter=SlackReadPresenter(policy.read_language_name),
+        presenter=presenter,
         telemetry=telemetry,
+    )
+    send_offers = SendOffers(
+        policy=policy,
+        home=home,
+        directory=gateway,
+        responder=gateway,
+        presenter=presenter,
+        telemetry=telemetry,
+        clock=clock,
     )
 
     registry = TaskRegistry()
@@ -256,6 +275,7 @@ def create_app(settings: Settings, overrides: Overrides | None = None) -> Applic
         bolt,
         ListenerContext(
             translate_message=translate_message,
+            offers=send_offers,
             registry=registry,
             telemetry=telemetry,
             clock=clock,
@@ -277,6 +297,7 @@ def create_app(settings: Settings, overrides: Overrides | None = None) -> Applic
         Readiness(),
         telemetry,
         authorization,
+        send_offers,
         listener_names,
         preloads,
         closers,

@@ -8,6 +8,7 @@ from slack_translator.delivery.views.notices import (
     progress_message,
     unavailable_message,
 )
+from slack_translator.delivery.views.ui_02_offer import offer_message
 from slack_translator.delivery.views.ui_04_result import result_message
 from slack_translator.delivery.views.ui_08_failed import failed_message
 from slack_translator.domain.messages import (
@@ -16,6 +17,7 @@ from slack_translator.domain.messages import (
     ErrorNotice,
     MessageUnavailable,
     NothingToTranslate,
+    Offer,
     PrivateMessage,
     ReadOutcome,
     Translated,
@@ -30,6 +32,8 @@ class SlackReadPresenter:
 
     def present(self, outcome: ReadOutcome) -> PrivateMessage:
         match outcome:
+            case Offer(source_language=source, reading_language=reading, action_value=value):
+                return offer_message(source, reading, value)
             case Translating():
                 return progress_message()
             case ErrorNotice():

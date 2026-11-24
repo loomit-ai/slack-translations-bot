@@ -21,6 +21,7 @@ from slack_translator.delivery.app import MissingScope
 from slack_translator.domain.detection import Detection
 from slack_translator.domain.errors import ModelError, ModelErrorCategory
 from slack_translator.domain.languages import LanguageCode
+from slack_translator.domain.messages import MessageRef, OfferRequest
 from slack_translator.infrastructure.call_context import current_retry_notice
 
 KOREAN = "파란 상자는 어디에 있나요?"
@@ -766,3 +767,74 @@ class TestScopeCheckAtStartup:
     ) -> None:
         h.slack.scopes = None
         await h.app.prepare()
+
+
+class TestOffers:
+    """The offer step through the real gateway and the fake Slack (FLOW-02 steps 5 to 7)."""
+
+    def request(self, h: Harness, **overrides: Any) -> OfferRequest:
+        values: dict[str, Any] = {
+            "correlation_id": "c1",
+            "ref": MessageRef(CHANNEL, TS, None),
+            "author_id": "U0AUTHOR",
+            "language": LanguageCode("ko"),
+            "script": None,
+            "received_at": h.clock.now(),
+        }
+        values.update(overrides)
+        return OfferRequest(**values)
+
+    def populate(self, h: Harness) -> None:
+        for user in ("U0AUTHOR", "U0ONE", "U0TWO"):
+            h.slack.add_user(user)
+        h.slack.add_user("U0GUEST", profile={"email": "a@gmail.com"})
+        h.slack.add_user("U0EXT", team_id="T0OTHER")
+        h.slack.members[CHANNEL] = ["U0AUTHOR", "U0ONE", "U0TWO", "U0GUEST", "U0EXT"]
+
+    async def test_members_get_private_offers_and_nobody_else_does(self, h: Harness) -> None:
+        self.populate(h)
+
+        await h.app.offers.send(self.request(h))
+
+        offers = h.slack.calls_of("chat.postEphemeral")
+        assert sorted(call.payload["user"] for call in offers) == ["U0ONE", "U0TWO"]
+        assert all(call.payload["channel"] == CHANNEL for call in offers)
+        assert (
+            offers[0].payload["text"] == "Message in Korean. Translate this message into English."
+        )
+        assert "thread_ts" not in offers[0].payload
+        assert h.translator.calls == []
+        h.slack.assert_no_public_writes()
+        [finished] = h.telemetry.named("offer_finished")
+        assert (finished.fields["sent"], finished.fields["failed"]) == (2, 0)
+
+    async def test_a_reply_is_offered_inside_its_thread(self, h: Harness) -> None:
+        self.populate(h)
+        ref = MessageRef(CHANNEL, "1795478400.000200", THREAD_ROOT)
+
+        await h.app.offers.send(self.request(h, ref=ref))
+
+        offers = h.slack.calls_of("chat.postEphemeral")
+        assert offers and all(call.payload["thread_ts"] == THREAD_ROOT for call in offers)
+
+    async def test_a_rate_limit_from_slack_is_waited_out_and_every_member_still_gets_the_offer(
+        self, h: Harness
+    ) -> None:
+        self.populate(h)
+        h.slack.fail_next("chat.postEphemeral", "ratelimited", status=429, retry_after=2)
+        h.slack.fail_next("chat.postEphemeral", "ratelimited", status=429, retry_after=2)
+
+        await h.app.offers.send(self.request(h))
+
+        delivered = [c for c in h.slack.calls_of("chat.postEphemeral")]
+        assert len(delivered) >= 2
+        [finished] = h.telemetry.named("offer_finished")
+        assert finished.fields["sent"] == 2
+        assert any(abs(slept - 2.0) < 0.01 for slept in h.clock.slept)
+
+    async def test_the_members_of_a_channel_are_listed_once_and_cached(self, h: Harness) -> None:
+        self.populate(h)
+        await h.app.offers.send(self.request(h))
+        await h.app.offers.send(self.request(h, ref=MessageRef(CHANNEL, "1795478400.000300", None)))
+        assert len(h.slack.calls_of("conversations.members")) == 1
+        assert len(h.slack.calls_of("users.info")) == 4  # the author is never looked up

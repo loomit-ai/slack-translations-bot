@@ -113,7 +113,9 @@ class SlackGateway:
                 "chat.postEphemeral", lambda: self._client.chat_postEphemeral(**arguments)
             )
         except SlackApiError as error:
-            raise SlackDeliveryError(_slack_error(error)) from None
+            status = getattr(error.response, "status_code", None)
+            wait = _retry_after(error) if status == 429 else None
+            raise SlackDeliveryError(_slack_error(error), wait) from None
 
     async def open_modal(self, trigger_id: str, view: dict[str, object]) -> None:
         try:

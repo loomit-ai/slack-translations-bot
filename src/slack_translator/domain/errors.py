@@ -97,6 +97,7 @@ class ResponseUrlUnusable(Exception):
 class SlackDeliveryError(Exception):
     """Slack did not accept a private message (ERR-07). The message never contains the payload."""
 
-    def __init__(self, slack_error: str | None = None) -> None:
+    def __init__(self, slack_error: str | None = None, retry_after: float | None = None) -> None:
         super().__init__("Slack did not accept the private message")
         self.slack_error = slack_error
+        self.retry_after = retry_after  # seconds Slack asked us to wait, on a rate limit

@@ -145,3 +145,72 @@ class RecordingTelemetry:
 
     def internal_error(self, **fields: Any) -> None:
         self._record("internal_error", **fields)
+
+
+class FakeDirectory:
+    """MemberDirectory for the offer step. Lookups can fail or wait, and are counted."""
+
+    def __init__(self, members: list[str], facts: dict[str, Any] | None = None) -> None:
+        self.members = members
+        self.facts = facts or {}
+        self.lookups: list[str] = []
+        self.listing_error: Exception | None = None
+        self.in_flight = 0
+        self.max_in_flight = 0
+
+    async def channel_members(self, channel_id: str) -> list[str]:
+        if self.listing_error is not None:
+            raise self.listing_error
+        return list(self.members)
+
+    async def user_facts(self, user_id: str) -> Any:
+        self.lookups.append(user_id)
+        self.in_flight += 1
+        self.max_in_flight = max(self.max_in_flight, self.in_flight)
+        try:
+            await asyncio.sleep(0)
+            value = self.facts.get(user_id)
+            if isinstance(value, Exception):
+                raise value
+            return value
+        finally:
+            self.in_flight -= 1
+
+
+@dataclass
+class EphemeralCall:
+    channel: str
+    user: str
+    text: str
+    blocks: Any
+    thread_ts: str | None
+
+
+class FakeResponder:
+    """PrivateResponder that records `ephemeral` calls. Scripted per user, in order."""
+
+    def __init__(self) -> None:
+        self.calls: list[EphemeralCall] = []
+        self.script: dict[str, list[Exception]] = {}
+        self.in_flight = 0
+        self.max_in_flight = 0
+
+    async def ephemeral(
+        self, channel: str, user: str, message: Any, thread_ts: str | None = None
+    ) -> None:
+        self.in_flight += 1
+        self.max_in_flight = max(self.max_in_flight, self.in_flight)
+        try:
+            await asyncio.sleep(0)
+            queue = self.script.get(user)
+            if queue:
+                raise queue.pop(0)
+            self.calls.append(EphemeralCall(channel, user, message.text, message.blocks, thread_ts))
+        finally:
+            self.in_flight -= 1
+
+    async def via_response_url(self, *args: Any, **kwargs: Any) -> None:
+        raise AssertionError("offers are sent with chat.postEphemeral, not a response URL")
+
+    async def open_modal(self, *args: Any, **kwargs: Any) -> None:
+        raise AssertionError("offers never open a modal")
