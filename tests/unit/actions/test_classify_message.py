@@ -8,11 +8,7 @@ from typing import Any
 import pytest
 from tests.support.fake_ports import FakeClock, RecordingTelemetry
 
-from slack_translator.actions.classify_message import (
-    ClassifyMessage,
-    IntakePolicy,
-    OfferRequest,
-)
+from slack_translator.actions.classify_message import ClassifyMessage, IntakePolicy
 from slack_translator.domain.detection import Detection
 from slack_translator.domain.errors import ModelError, ModelErrorCategory
 from slack_translator.domain.intake import MessageEvent
@@ -22,6 +18,7 @@ from slack_translator.domain.languages import (
     candidates_of,
     parse_language_seed,
 )
+from slack_translator.domain.messages import MessageRef, OfferRequest
 from slack_translator.infrastructure.dedupe import DuplicateGuard
 
 CHANNEL = "C0123ABCDE"
@@ -71,7 +68,7 @@ class RecordingOffers:
         self.requests: list[OfferRequest] = []
         self.error: Exception | None = None
 
-    async def offer(self, request: OfferRequest) -> None:
+    async def send(self, request: OfferRequest) -> None:
         self.requests.append(request)
         if self.error is not None:
             raise self.error
@@ -93,6 +90,7 @@ class Rig:
             telemetry=self.telemetry,
             seen=DuplicateGuard(self.clock),
             offers=self.offers,
+            clock=self.clock,
             is_served=lambda channel: channel == CHANNEL,
         )
 
@@ -117,14 +115,11 @@ async def test_a_confident_customer_message_is_counted_and_handed_to_the_offer_s
     [request] = rig.offers.requests
     assert request == OfferRequest(
         correlation_id="corr-1",
-        channel=CHANNEL,
-        ts="1700000000.000100",
-        thread_root_ts="1700000000.000050",
+        ref=MessageRef(channel=CHANNEL, ts="1700000000.000100", thread_root_ts="1700000000.000050"),
         author_id="U0123ABCDE",
         language=code("ko"),
-        language_name="Korean",
         script=None,
-        confidence=0.95,
+        received_at=1000.0,
     )
     assert rig.classified() == [
         {
@@ -313,6 +308,23 @@ async def test_the_same_event_delivered_at_once_is_classified_once() -> None:
     assert len(rig.classifier.texts) == 1
     assert len(rig.offers.requests) == 1
     assert [d["reason"] for d in rig.dropped()] == ["duplicate"]
+
+
+async def test_the_offer_request_says_when_the_event_arrived() -> None:
+    rig = Rig()
+    rig.clock.advance(42)
+
+    await rig.run(message())
+
+    assert rig.offers.requests[0].received_at == 1042.0
+
+
+async def test_a_message_that_is_not_in_a_thread_has_no_thread_root() -> None:
+    rig = Rig()
+
+    await rig.run(message(thread_root_ts=None))
+
+    assert rig.offers.requests[0].ref.thread_root_ts is None
 
 
 async def test_a_new_event_id_is_processed_and_an_old_one_expires() -> None:

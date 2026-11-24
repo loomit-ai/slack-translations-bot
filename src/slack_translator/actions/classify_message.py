@@ -21,13 +21,15 @@ from slack_translator.domain.intake import (
     known_language,
     screen,
 )
-from slack_translator.domain.languages import (
-    ConfiguredLanguage,
-    LanguageCode,
-    Script,
-    candidates_of,
+from slack_translator.domain.languages import ConfiguredLanguage, candidates_of
+from slack_translator.domain.messages import MessageRef, OfferRequest
+from slack_translator.domain.ports import (
+    Clock,
+    DropReason,
+    LanguageClassifier,
+    OfferSender,
+    Telemetry,
 )
-from slack_translator.domain.ports import DropReason, LanguageClassifier, Telemetry
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,27 +37,6 @@ class IntakePolicy:
     languages: tuple[ConfiguredLanguage, ...]
     min_confidence: float
     classifier_timeout: float
-
-
-@dataclass(frozen=True, slots=True)
-class OfferRequest:
-    """What the offer step needs to offer one message. It never holds the message text."""
-
-    correlation_id: str
-    channel: str
-    ts: str
-    thread_root_ts: str | None
-    author_id: str | None
-    language: LanguageCode
-    language_name: str
-    script: Script | None
-    confidence: float
-
-
-class OfferSink(Protocol):
-    """The offer step (FLOW-02 steps 5 to 7). It counts its own outcomes."""
-
-    async def offer(self, request: OfferRequest) -> None: ...
 
 
 class SeenEvents(Protocol):
@@ -72,7 +53,8 @@ class ClassifyMessage:
         classifier: LanguageClassifier,
         telemetry: Telemetry,
         seen: SeenEvents,
-        offers: OfferSink,
+        offers: OfferSender,
+        clock: Clock,
         is_served: Callable[[str], bool],
     ) -> None:
         self._policy = policy
@@ -80,6 +62,7 @@ class ClassifyMessage:
         self._telemetry = telemetry
         self._seen = seen
         self._offers = offers
+        self._clock = clock
         self._is_served = is_served
 
     async def run(self, event: MessageEvent, correlation_id: str) -> None:
@@ -91,6 +74,7 @@ class ClassifyMessage:
             )
 
     async def _run(self, event: MessageEvent, correlation_id: str) -> None:
+        received_at = self._clock.now()
         screened = screen(event, self._is_served)
         if isinstance(screened, Dropped):
             self._dropped(event, screened.reason)
@@ -114,17 +98,16 @@ class ClassifyMessage:
         target = customer_language(detection, languages, self._policy.min_confidence)
         if target is None or detection is None:
             return
-        await self._offers.offer(
+        await self._offers.send(
             OfferRequest(
                 correlation_id=correlation_id,
-                channel=event.channel,
-                ts=event.ts,
-                thread_root_ts=event.thread_root_ts,
+                ref=MessageRef(
+                    channel=event.channel, ts=event.ts, thread_root_ts=event.thread_root_ts
+                ),
                 author_id=event.user_id,
                 language=target.code,
-                language_name=target.name,
                 script=detection.script,
-                confidence=detection.confidence,
+                received_at=received_at,
             )
         )
 
