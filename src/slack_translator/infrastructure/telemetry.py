@@ -23,6 +23,7 @@ from slack_translator.domain.errors import ErrorCategory, ModelCallRecord
 from slack_translator.domain.languages import SUPPORTED_LANGUAGES
 from slack_translator.domain.ports import (
     AckKind,
+    AuthorKind,
     ClassifyResult,
     DropReason,
     Entry,
@@ -42,7 +43,7 @@ ALLOWED_LOG_FIELDS: Final = frozenset(
         "prompt_version", "attempt", "latency_ms", "input_chars", "prompt_tokens",
         "completion_tokens", "outcome", "error_category", "http_status", "slack_method",
         "slack_error", "drop_reason", "recipient_count", "exception_type", "refusal_reason",
-        "logger", "channel_count",
+        "author_kind", "logger", "channel_count",
     }
 )  # fmt: skip
 
@@ -161,7 +162,10 @@ class LogTelemetry:
             registry=reg,
         )
         self._offers = Counter(
-            "translator_offers_total", "Private offers, by outcome", ["outcome"], registry=reg
+            "translator_offers_total",
+            "Private offers, by outcome and by who wrote the message",
+            ["outcome", "author_kind"],
+            registry=reg,
         )
         self._slack_calls = Counter(
             "translator_slack_calls_total",
@@ -296,17 +300,19 @@ class LogTelemetry:
         sent: int,
         failed: int,
         expired: int,
+        author_kind: AuthorKind,
     ) -> None:
         # LOG-01 has one count field, so each non-empty outcome gets its own line.
         shared = {
             "correlation_id": _identifier(correlation_id),
             "channel_id": _identifier(channel_id),
             "message_ts": _identifier(message_ts),
+            "author_kind": author_kind,
         }
         counts = (("sent", sent), ("failed", failed), ("expired", expired))
         for outcome, count in counts:
             if count > 0:
-                self._offers.labels(outcome).inc(count)
+                self._offers.labels(outcome, author_kind).inc(count)
                 self._emit(
                     "offer.finished", "INFO", outcome=outcome, recipient_count=count, **shared
                 )

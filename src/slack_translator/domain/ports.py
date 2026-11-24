@@ -35,6 +35,8 @@ TranslateOutcome = Literal[
     "delivery_failed",
 ]
 OfferOutcome = Literal["sent", "failed", "expired"]
+# Who wrote the message an offer is about, for the 0.2 review of decision 1.
+AuthorKind = Literal["x3m_member", "outside", "unverified"]
 SlackCallOutcome = Literal["ok", "rate_limited", "error", "timeout"]
 
 
@@ -203,6 +205,7 @@ class Telemetry(Protocol):
         sent: int,
         failed: int,
         expired: int,
+        author_kind: AuthorKind,
     ) -> None: ...
 
     def translate_requested(

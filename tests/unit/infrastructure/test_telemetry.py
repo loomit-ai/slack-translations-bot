@@ -21,7 +21,7 @@ ALLOWED_FIELDS = {
     "confidence", "target_language", "operation", "provider", "model", "prompt_version",
     "attempt", "latency_ms", "input_chars", "prompt_tokens", "completion_tokens", "outcome",
     "error_category", "http_status", "slack_method", "slack_error", "drop_reason",
-    "recipient_count", "exception_type", "refusal_reason", "logger", "channel_count",
+    "recipient_count", "exception_type", "refusal_reason", "logger", "channel_count", "author_kind",
 }  # fmt: skip
 
 # MET-01 to MET-09: the metric families the exposition must carry.
@@ -124,7 +124,7 @@ EVERY_METHOD: list[Callable[[LogTelemetry], None]] = [
     ),
     lambda t: t.offer_finished(
         correlation_id="c1", channel_id="C0123ABCDE", message_ts="1700000000.000100",
-        sent=3, failed=1, expired=2,
+        sent=3, failed=1, expired=2, author_kind="x3m_member",
     ),
     lambda t: t.translate_requested(
         entry="retry", correlation_id="c1", team_id="T1", channel_id="C0123ABCDE",
@@ -307,27 +307,31 @@ def test_offers_are_logged_per_outcome_and_counted() -> None:
 
     r.telemetry.offer_finished(
         correlation_id="c1", channel_id="C0123ABCDE", message_ts="1700000000.000100",
-        sent=3, failed=0, expired=2,
+        sent=3, failed=0, expired=2, author_kind="outside",
     )  # fmt: skip
 
     assert [(e["event"], e["outcome"], e["recipient_count"]) for e in r.events] == [
         ("offer.finished", "sent", 3),
         ("offer.finished", "expired", 2),
     ]
-    assert r.count("translator_offers_total", outcome="sent") == 3
-    assert r.count("translator_offers_total", outcome="expired") == 2
+    assert {e["author_kind"] for e in r.events} == {"outside"}
+    assert r.count("translator_offers_total", outcome="sent", author_kind="outside") == 3
+    assert r.count("translator_offers_total", outcome="expired", author_kind="outside") == 2
     assert r.count("translator_offers_total", outcome="failed") is None
+    assert r.count("translator_offers_total", outcome="sent", author_kind="x3m_member") is None
 
 
 def test_an_offer_round_with_no_recipients_still_leaves_one_line() -> None:
     r = rig()
 
     r.telemetry.offer_finished(
-        correlation_id="c1", channel_id="C0123ABCDE", message_ts="1.1", sent=0, failed=0, expired=0
-    )
+        correlation_id="c1", channel_id="C0123ABCDE", message_ts="1.1", sent=0, failed=0, expired=0,
+        author_kind="unverified",
+    )  # fmt: skip
 
     [event] = r.events
     assert event["recipient_count"] == 0
+    assert event["author_kind"] == "unverified"
     assert "outcome" not in event
 
 

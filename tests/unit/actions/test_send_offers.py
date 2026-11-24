@@ -89,7 +89,7 @@ async def test_every_eligible_member_gets_one_offer_and_the_author_gets_none() -
     rig = rig_with({"U1": member(), "U2": member(email_domain="loomit.ai")})
     await rig.offers.send(rig.request())
     assert rig.offered_users() == ["U1", "U2"]
-    assert "U0AUTHOR" not in rig.directory.lookups
+    assert rig.directory.lookups.count("U0AUTHOR") == 1, "once, for counting only"
     assert rig.finished()["sent"] == 2
 
 
@@ -180,8 +180,20 @@ async def test_a_rate_limit_makes_every_offer_wait_for_the_retry_after_then_go_o
     assert any(abs(slept - 3.0) < 0.01 for slept in rig.clock.slept)
     assert rig.finished() == {
         "correlation_id": "c1", "channel_id": CHANNEL, "message_ts": TS,
-        "sent": 3, "failed": 0, "expired": 0,
+        "sent": 3, "failed": 0, "expired": 0, "author_kind": "x3m_member",
     }  # fmt: skip
+
+
+async def test_no_offer_goes_out_after_the_cut_off_even_after_a_rate_limit_wait() -> None:
+    rig = rig_with({"U1": member()})
+    request = rig.request(received_at=rig.clock.now() - 58)
+    rig.responder.script["U1"] = [SlackDeliveryError("ratelimited", retry_after=5.0)]
+
+    await rig.offers.send(request)
+
+    assert rig.responder.calls == []
+    assert rig.finished()["expired"] == 1
+    assert rig.clock.now() <= request.received_at + OFFER_LIFETIME
 
 
 async def test_an_offer_that_cannot_go_out_within_a_minute_of_the_event_expires() -> None:
@@ -235,3 +247,58 @@ async def test_the_events_carry_counts_not_people_or_text() -> None:
     await rig.offers.send(rig.request())
     assert "U1" not in repr(rig.telemetry.events)
     assert "U0AUTHOR" not in repr(rig.telemetry.events)
+
+
+class TestAuthorKind:
+    """F2 · Offers are counted by who wrote the message: an X3M member, an outsider, or unknown."""
+
+    @pytest.mark.parametrize(
+        ("author_facts", "kind"),
+        [
+            pytest.param(member(), "x3m_member", id="colleague"),
+            pytest.param(
+                member(email_domain="loomit.ai"), "x3m_member", id="colleague, other X3M domain"
+            ),
+            pytest.param(member(team_id="T0OTHER"), "outside", id="Slack Connect customer"),
+            pytest.param(member(is_stranger=True), "outside", id="stranger"),
+            pytest.param(
+                member(email_domain="gmail.com"), "outside", id="home workspace, other email"
+            ),
+            pytest.param(member(is_bot=True), "outside", id="bot"),
+            pytest.param(None, "unverified", id="unknown author"),
+            pytest.param(member(team_id=None), "unverified", id="no workspace"),
+            pytest.param(member(email_domain=None), "unverified", id="no email"),
+            pytest.param(RuntimeError("lookup failed"), "unverified", id="lookup error"),
+        ],
+    )
+    async def test_the_author_is_classified_once_with_the_membership_rule(
+        self, author_facts: Any, kind: str
+    ) -> None:
+        rig = Rig(["U0AUTHOR", "U1"], {"U0AUTHOR": author_facts, "U1": member()})
+
+        await rig.offers.send(rig.request())
+
+        assert rig.finished()["author_kind"] == kind
+        assert rig.directory.lookups.count("U0AUTHOR") == 1
+        assert rig.offered_users() == ["U1"], "offers go out whatever the author is"
+
+    async def test_a_message_without_a_known_author_is_unverified(self) -> None:
+        rig = rig_with({"U1": member()})
+        await rig.offers.send(rig.request(author_id=None))
+        assert rig.finished()["author_kind"] == "unverified"
+
+    async def test_a_round_with_nobody_to_offer_to_still_says_who_wrote_it(self) -> None:
+        rig = Rig(["U0AUTHOR"], {"U0AUTHOR": member(team_id="T0OTHER")})
+        await rig.offers.send(rig.request())
+        assert rig.finished()["author_kind"] == "outside"
+        assert rig.finished()["sent"] == 0
+
+    async def test_the_events_never_carry_the_author_or_their_email(self) -> None:
+        rig = Rig(
+            ["U0AUTHOR", "U1"],
+            {"U0AUTHOR": member(email_domain="authors-domain.example"), "U1": member()},
+        )
+        await rig.offers.send(rig.request())
+        text = repr(rig.telemetry.events)
+        assert "U0AUTHOR" not in text
+        assert "authors-domain" not in text

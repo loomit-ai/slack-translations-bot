@@ -74,6 +74,10 @@ ATTEMPT_MARGIN: Final = 3.0
 # These requests come from a button on a private message, so their answers replace that message.
 REPLACES_ITS_MESSAGE: Final = ("retry", "offer")
 
+# The fallback message waits out a short Retry-After once; anything longer is not worth holding a
+# member for.
+FALLBACK_RETRY_AFTER_LIMIT: Final = 5.0
+
 
 class HomeWorkspace:
     """The workspace the bot is installed in. Known after `auth.test` at startup (REQ-05)."""
@@ -421,14 +425,22 @@ class TranslateMessage:
                 self._unexpected(request, error)
         if quiet:
             return False
-        try:
-            await self._responder.ephemeral(request.channel, request.user_id, message, thread_ts)
-        except SlackDeliveryError:
-            return False
-        except Exception as error:
-            self._unexpected(request, error)
-            return False
-        return True
+        for attempt in (1, 2):
+            try:
+                await self._responder.ephemeral(
+                    request.channel, request.user_id, message, thread_ts
+                )
+                return True
+            except SlackDeliveryError as error:
+                wait = error.retry_after
+                if attempt == 1 and wait is not None and wait <= FALLBACK_RETRY_AFTER_LIMIT:
+                    await self._clock.sleep(wait)
+                    continue
+                return False
+            except Exception as error:
+                self._unexpected(request, error)
+                return False
+        return False
 
     def _unexpected(self, request: TranslateRequest, error: Exception) -> None:
         self._telemetry.internal_error(

@@ -17,6 +17,7 @@ from slack_translator.domain.boundary import membership
 from slack_translator.domain.errors import SlackDeliveryError
 from slack_translator.domain.messages import Offer, OfferRequest, PrivateMessage
 from slack_translator.domain.ports import (
+    AuthorKind,
     Clock,
     MemberDirectory,
     OfferOutcome,
@@ -56,6 +57,7 @@ class SendOffers:
         self._clock = clock
 
     async def send(self, request: OfferRequest) -> None:
+        author_kind = await self._author_kind(request)
         recipients: list[str] = []
         try:
             recipients = await self._recipients(request)
@@ -70,7 +72,26 @@ class SendOffers:
             sent=outcomes.count("sent"),
             failed=outcomes.count("failed"),
             expired=outcomes.count("expired"),
+            author_kind=author_kind,
         )
+
+    async def _author_kind(self, request: OfferRequest) -> AuthorKind:
+        """Who wrote the message, by the membership rule, for counting only (decision 1).
+
+        A lookup that fails or is incomplete is `unverified`. It never stops the offers, and
+        neither the author nor anything about them reaches a log line or a label.
+        """
+        home = self._home.team_id
+        if home is None or request.author_id is None:
+            return "unverified"
+        try:
+            facts = await self._directory.user_facts(request.author_id)
+        except Exception:
+            return "unverified"
+        verdict = membership(facts, home, self._policy.member_email_domains)
+        if verdict == "member":
+            return "x3m_member"
+        return "unverified" if verdict == "unverified" else "outside"
 
     async def _recipients(self, request: OfferRequest) -> list[str]:
         home = self._home.team_id

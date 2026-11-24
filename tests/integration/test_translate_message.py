@@ -22,9 +22,9 @@ from slack_translator.delivery.app import MissingScope
 from slack_translator.domain.action_values import parse
 from slack_translator.domain.call_context import current_attempt
 from slack_translator.domain.detection import Detection
-from slack_translator.domain.errors import ModelError, ModelErrorCategory
+from slack_translator.domain.errors import ModelError, ModelErrorCategory, SlackDeliveryError
 from slack_translator.domain.languages import LanguageCode
-from slack_translator.domain.messages import MessageRef, OfferRequest
+from slack_translator.domain.messages import MessageRef, OfferRequest, PrivateMessage
 
 KOREAN = "파란 상자는 어디에 있나요?"
 TIMEOUT = ModelError(ModelErrorCategory.TIMEOUT, "translate")
@@ -993,7 +993,7 @@ class TestOffers:
         await h.app.offers.send(self.request(h))
         await h.app.offers.send(self.request(h, ref=MessageRef(CHANNEL, "1795478400.000300", None)))
         assert len(h.slack.calls_of("conversations.members")) == 1
-        assert len(h.slack.calls_of("users.info")) == 4  # the author is never looked up
+        assert len(h.slack.calls_of("users.info")) == 5  # the author once, for counting only
 
 
 class TestOfferClick:
@@ -1134,3 +1134,84 @@ class TestOfferClick:
         assert h.timeline[: h.timeline.index("telemetry:ack_observed")] == []
         h.translator.hold.set()
         await h.app.registry.drain()
+
+
+class TestRateLimitsAndAuthorKind:
+    def request(self, h: Harness, **overrides: Any) -> OfferRequest:
+        values: dict[str, Any] = {
+            "correlation_id": "c1",
+            "ref": MessageRef(CHANNEL, TS, None),
+            "author_id": "U0AUTHOR",
+            "language": LanguageCode("ko"),
+            "script": None,
+            "received_at": h.clock.now(),
+        }
+        values.update(overrides)
+        return OfferRequest(**values)
+
+    async def test_the_gateway_leaves_a_rate_limit_on_a_private_message_to_the_caller(
+        self, h: Harness
+    ) -> None:
+        h.slack.fail_next("chat.postEphemeral", "ratelimited", status=429, retry_after=2)
+        message = PrivateMessage(text="hello", blocks=[])
+
+        with pytest.raises(SlackDeliveryError) as caught:
+            await h.app._gateway.ephemeral(CHANNEL, MEMBER, message)
+
+        assert caught.value.retry_after == 2
+        assert len(h.slack.calls_of("chat.postEphemeral")) == 1
+        assert h.clock.slept == []
+
+    async def test_no_offer_is_sent_after_the_cut_off_even_after_a_retry_after_wait(
+        self, h: Harness
+    ) -> None:
+        for user in ("U0AUTHOR", "U0ONE"):
+            h.slack.add_user(user)
+        h.slack.members[CHANNEL] = ["U0AUTHOR", "U0ONE"]
+        h.slack.fail_next("chat.postEphemeral", "ratelimited", status=429, retry_after=5)
+        request = self.request(h, received_at=h.clock.now() - 58)
+
+        await h.app.offers.send(request)
+
+        assert len(h.slack.calls_of("chat.postEphemeral")) == 1, "only the rate-limited attempt"
+        [finished] = h.telemetry.named("offer_finished")
+        assert (finished.fields["sent"], finished.fields["expired"]) == (0, 1)
+        assert h.clock.now() <= request.received_at + 60
+
+    async def test_the_menus_fallback_message_waits_out_a_short_retry_after_once(
+        self, h: Harness
+    ) -> None:
+        h.slack.add_message(CHANNEL, TS, KOREAN)
+        h.slack.fail_next(RESPONSE_URL, "used_url", status=404)
+        h.slack.fail_next("chat.postEphemeral", "ratelimited", status=429, retry_after=1)
+
+        await h.deliver_and_settle(shortcut(h))
+
+        assert len(h.slack.calls_of("chat.postEphemeral")) == 2
+        assert any(abs(slept - 1.0) < 0.01 for slept in h.clock.slept)
+
+    @pytest.mark.parametrize(
+        ("record", "kind"),
+        [
+            pytest.param(None, "x3m_member", id="colleague"),
+            pytest.param(
+                {"team_id": "T0OTHER"}, "outside", id="customer from another organisation"
+            ),
+            pytest.param({"profile": {"email": "a@gmail.com"}}, "outside", id="other email"),
+            pytest.param("missing", "unverified", id="author Slack does not know"),
+        ],
+    )
+    async def test_offers_say_who_wrote_the_message_without_naming_them(
+        self, h: Harness, record: Any, kind: str
+    ) -> None:
+        h.slack.add_user("U0ONE")
+        h.slack.members[CHANNEL] = ["U0AUTHOR", "U0ONE"]
+        if record != "missing":
+            h.slack.add_user("U0AUTHOR", **(record or {}))
+
+        await h.app.offers.send(self.request(h))
+
+        [finished] = h.telemetry.named("offer_finished")
+        assert finished.fields["author_kind"] == kind
+        assert finished.fields["sent"] == 1
+        assert "U0AUTHOR" not in repr(h.telemetry.events)

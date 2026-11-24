@@ -113,8 +113,11 @@ class SlackGateway:
         if thread_ts is not None:
             arguments["thread_ts"] = thread_ts
         try:
+            # Rate limits are the caller's: an offer has a cut-off a hidden sleep here would ignore.
             await self._call(
-                "chat.postEphemeral", lambda: self._client.chat_postEphemeral(**arguments)
+                "chat.postEphemeral",
+                lambda: self._client.chat_postEphemeral(**arguments),
+                retry_rate_limit=False,
             )
         except SlackApiError as error:
             status = getattr(error.response, "status_code", None)
@@ -265,8 +268,17 @@ class SlackGateway:
             ),
         )
 
-    async def _call(self, method: str, make_call: Callable[[], Awaitable[Any]]) -> Any:
-        """One Slack call with a deadline, counted. One retry when Slack asks for a short wait."""
+    async def _call(
+        self,
+        method: str,
+        make_call: Callable[[], Awaitable[Any]],
+        *,
+        retry_rate_limit: bool = True,
+    ) -> Any:
+        """One Slack call with a deadline, counted.
+
+        One retry when Slack asks for a short wait, unless the caller owns rate limits itself.
+        """
         for attempt in (1, 2):
             try:
                 result = await make_call()
@@ -274,7 +286,12 @@ class SlackGateway:
                 status = getattr(error.response, "status_code", None)
                 if status == 429:
                     wait = _retry_after(error)
-                    if attempt == 1 and wait is not None and wait <= RETRY_AFTER_LIMIT:
+                    if (
+                        retry_rate_limit
+                        and attempt == 1
+                        and wait is not None
+                        and wait <= RETRY_AFTER_LIMIT
+                    ):
                         self._count(method, "rate_limited")
                         await self._clock.sleep(wait)
                         continue
