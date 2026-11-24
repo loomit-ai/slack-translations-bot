@@ -5,6 +5,7 @@ from slack_bolt.async_app import AsyncApp
 from slack_translator.delivery.listeners import (
     channel_membership,
     message_event,
+    offer_click,
     retry_click,
     shortcut,
 )
@@ -16,6 +17,7 @@ LISTENER_NAMES = (
     channel_membership.JOINED,
     channel_membership.LEFT,
     message_event.NAME,
+    offer_click.NAME,
 )
 
 
@@ -24,4 +26,5 @@ def register_all(app: AsyncApp, context: ListenerContext) -> tuple[str, ...]:
     retry_click.register(app, context)
     channel_membership.register(app, context)
     message_event.register(app, context)
+    offer_click.register(app, context)
     return LISTENER_NAMES

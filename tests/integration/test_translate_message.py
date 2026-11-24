@@ -13,11 +13,13 @@ from tests.support.payloads import (
     MEMBER,
     THREAD_ROOT,
     TS,
+    offer_payload,
     retry_payload,
     shortcut_payload,
 )
 
 from slack_translator.delivery.app import MissingScope
+from slack_translator.domain.action_values import parse
 from slack_translator.domain.call_context import current_attempt
 from slack_translator.domain.detection import Detection
 from slack_translator.domain.errors import ModelError, ModelErrorCategory
@@ -114,6 +116,7 @@ class TestAcknowledgement:
             "member_joined_channel",
             "member_left_channel",
             "message_event",
+            "translate_offer",
         }
         assert set(h.app.listener_names) == covered
 
@@ -991,3 +994,143 @@ class TestOffers:
         await h.app.offers.send(self.request(h, ref=MessageRef(CHANNEL, "1795478400.000300", None)))
         assert len(h.slack.calls_of("conversations.members")) == 1
         assert len(h.slack.calls_of("users.info")) == 4  # the author is never looked up
+
+
+class TestOfferClick:
+    """FLOW-03 · The click on a private offer: fetch, replace in place, no detection."""
+
+    def offer(self, h: Harness, **overrides: Any) -> dict[str, Any]:
+        return offer_payload(response_url=h.slack.response_url(), **overrides)
+
+    async def test_the_click_translates_the_current_text_with_the_offered_language_as_the_hint(
+        self, h: Harness
+    ) -> None:
+        h.slack.add_message(CHANNEL, TS, KOREAN)
+
+        await h.deliver_and_settle(self.offer(h))
+
+        assert h.classifier.calls == []
+        [call] = h.translator.calls
+        assert (call.text, call.target_language, call.source_language_hint) == (KOREAN, "en", "ko")
+        assert [post["text"] for post in response_url_posts(h)] == [
+            "Translating…",
+            "English translation from Korean\nWhere is the blue box?",
+        ]
+        assert all(post["replace_original"] is True for post in response_url_posts(h))
+        assert len(h.slack.calls_of("conversations.history")) == 1
+        h.slack.assert_no_public_writes()
+        assert [e.fields["entry"] for e in h.telemetry.named("translate_completed")] == ["offer"]
+
+    async def test_an_edit_after_the_offer_is_translated_and_the_offered_language_is_kept(
+        self, h: Harness
+    ) -> None:
+        h.slack.add_message(CHANNEL, TS, "Có ba ngôi sao giấy trong hộp màu xanh.")
+        await h.deliver_and_settle(self.offer(h, language="ko"))
+        [call] = h.translator.calls
+        assert call.text.startswith("Có ba")
+        assert call.source_language_hint == "ko"
+
+    async def test_an_offer_on_a_thread_reply_reads_it_from_the_thread(self, h: Harness) -> None:
+        reply = "1795478400.000200"
+        h.slack.add_message(CHANNEL, THREAD_ROOT, "root")
+        h.slack.add_message(CHANNEL, reply, KOREAN, thread_ts=THREAD_ROOT)
+        await h.deliver_and_settle(self.offer(h, ts=reply, thread_root_ts=THREAD_ROOT))
+        [fetch] = h.slack.calls_of("conversations.replies")
+        assert fetch.payload["ts"] == THREAD_ROOT
+        assert len(h.translator.calls) == 1
+
+    async def test_a_message_deleted_after_the_offer_replaces_it_with_the_notice(
+        self, h: Harness
+    ) -> None:
+        await h.deliver_and_settle(self.offer(h))
+        assert h.translator.calls == []
+        [post] = response_url_posts(h)
+        assert post["text"] == "This message is no longer available."
+        assert post["replace_original"] is True
+
+    async def test_a_failed_translation_replaces_the_offer_with_the_error_and_a_retry_button(
+        self, h: Harness
+    ) -> None:
+        h.slack.add_message(CHANNEL, TS, KOREAN)
+        h.translator.script = [TIMEOUT, TIMEOUT]
+
+        await h.deliver_and_settle(self.offer(h))
+
+        texts = [post["text"] for post in response_url_posts(h)]
+        assert texts == [
+            "Translating…",
+            "An error has occurred…",
+            "We couldn’t translate this message. Retry translation.",
+        ]
+        retry = parse(button_value(response_url_posts(h)[-1]))
+        assert retry.language is None, "Retry detects the language again"
+        assert (retry.channel, retry.ts) == (CHANNEL, TS)
+
+    async def test_one_failure_is_retried_and_the_note_comes_before_the_result(
+        self, h: Harness
+    ) -> None:
+        h.slack.add_message(CHANNEL, TS, KOREAN)
+        h.translator.script = [TIMEOUT, "Where is the blue box?"]
+        await h.deliver_and_settle(self.offer(h))
+        assert [post["text"] for post in response_url_posts(h)] == [
+            "Translating…",
+            "An error has occurred…",
+            "English translation from Korean\nWhere is the blue box?",
+        ]
+        assert len(h.translator.calls) == 2
+
+    async def test_an_expired_response_url_falls_back_to_a_private_message(
+        self, h: Harness
+    ) -> None:
+        h.slack.add_message(CHANNEL, TS, KOREAN)
+        h.slack.fail_next(RESPONSE_URL, "used_url", status=404)
+        h.slack.fail_next(RESPONSE_URL, "used_url", status=404)
+        await h.deliver_and_settle(self.offer(h))
+        fallbacks = h.slack.calls_of("chat.postEphemeral")
+        assert fallbacks and fallbacks[-1].payload["user"] == MEMBER
+        h.slack.assert_no_public_writes()
+
+    @pytest.mark.parametrize(
+        ("team", "record"),
+        [
+            pytest.param("T0OTHER", HOME_MEMBER, id="another workspace"),
+            pytest.param("T0HOME", with_email("a@gmail.com"), id="other email domain"),
+            pytest.param("T0HOME", {**HOME_MEMBER, "is_stranger": True}, id="stranger"),
+        ],
+    )
+    async def test_someone_who_is_not_a_member_gets_nothing_and_nothing_is_fetched(
+        self, h: Harness, team: str, record: dict[str, Any]
+    ) -> None:
+        h.slack.add_message(CHANNEL, TS, KOREAN)
+        h.slack.users[ACTOR] = {"id": ACTOR, **record}
+        await h.deliver_and_settle(self.offer(h, user=ACTOR, user_team=team))
+        assert h.slack.calls_of_kind("private_write") == []
+        assert h.slack.calls_of("conversations.history") == []
+        assert h.translator.calls == []
+
+    async def test_a_channel_the_bot_has_left_replaces_the_offer_with_the_notice(
+        self, h: Harness
+    ) -> None:
+        h.slack.add_channel(CHANNEL, is_member=False)
+        h.app.served.forget(CHANNEL)
+        await h.deliver_and_settle(self.offer(h))
+        [post] = response_url_posts(h)
+        assert post["text"] == "X3M Translator is unavailable in this channel."
+        assert h.translator.calls == [] and h.slack.calls_of("conversations.history") == []
+
+    async def test_a_tampered_offer_value_is_dropped_without_output(self, h: Harness) -> None:
+        h.slack.add_message(CHANNEL, TS, KOREAN)
+        for bad in ("", "{}", '{"v":1,"c":"C0OTHERXYZ","ts":"1795478400.000100","l":"ko"}'):
+            await h.deliver_and_settle(self.offer(h, value=bad))
+        assert h.slack.calls_of_kind("private_write") == []
+        assert h.translator.calls == []
+
+    async def test_the_click_acknowledges_before_any_slow_work(self, h: Harness) -> None:
+        h.slack.add_message(CHANNEL, TS, KOREAN)
+        h.translator.hold = asyncio.Event()
+        response, elapsed = await h.deliver(self.offer(h))
+        assert response is not None and response.status == 200
+        assert elapsed < 1
+        assert h.timeline[: h.timeline.index("telemetry:ack_observed")] == []
+        h.translator.hold.set()
+        await h.app.registry.drain()

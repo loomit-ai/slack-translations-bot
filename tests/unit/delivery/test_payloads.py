@@ -4,8 +4,9 @@ from typing import Any
 
 import pytest
 
-from slack_translator.delivery.payloads import parse_retry_click, parse_shortcut
+from slack_translator.delivery.payloads import parse_offer_click, parse_retry_click, parse_shortcut
 from slack_translator.domain.action_values import ActionValue, encode
+from slack_translator.domain.languages import LanguageCode
 
 
 def shortcut_body(**overrides: Any) -> dict[str, Any]:
@@ -143,3 +144,36 @@ class TestRetryClick:
 
     def test_a_click_without_actions_is_rejected(self) -> None:
         assert parse_retry_click(click_body(VALUE, actions=[]), correlation_id="cid") is None
+
+
+class TestOfferClick:
+    def test_a_valid_click_carries_the_offered_language_and_names_the_message(self) -> None:
+        value = encode(
+            ActionValue(
+                channel="C0123ABCDE",
+                ts="1795478400.000100",
+                thread_root_ts="1795478000.000050",
+                language=LanguageCode("zh"),
+                script="Hant",
+            )
+        )
+        request = parse_offer_click(click_body(value), correlation_id="cid")
+        assert request is not None
+        assert request.entry == "offer"
+        assert request.text is None
+        assert (request.language, request.script) == ("zh", "Hant")
+        assert request.ref.thread_root_ts == "1795478000.000050"
+        assert request.user_id == "U0MEMBER"
+
+    def test_an_offer_value_without_a_language_is_rejected(self) -> None:
+        assert parse_offer_click(click_body(VALUE), correlation_id="cid") is None
+
+    def test_a_value_for_another_channel_than_the_click_is_rejected(self) -> None:
+        other = encode(
+            ActionValue(channel="C0OTHER123", ts="1795478400.000100", language=LanguageCode("ko"))
+        )
+        assert parse_offer_click(click_body(other), correlation_id="cid") is None
+
+    @pytest.mark.parametrize("value", ["", "not json", '{"v":1}'])
+    def test_a_tampered_value_is_rejected(self, value: str) -> None:
+        assert parse_offer_click(click_body(value), correlation_id="cid") is None

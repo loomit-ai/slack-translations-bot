@@ -17,6 +17,8 @@ from slack_translator.domain.detection import (
     AlreadyRead,
     Detection,
     Hinted,
+    ReadDecision,
+    Unhinted,
     decide_read,
 )
 from slack_translator.domain.errors import (
@@ -25,7 +27,12 @@ from slack_translator.domain.errors import (
     ResponseUrlUnusable,
     SlackDeliveryError,
 )
-from slack_translator.domain.languages import ConfiguredLanguage, LanguageCode, candidates_of
+from slack_translator.domain.languages import (
+    ConfiguredLanguage,
+    LanguageCode,
+    Script,
+    candidates_of,
+)
 from slack_translator.domain.messages import (
     AlreadyInReadLanguage,
     ChannelNotAllowed,
@@ -64,6 +71,9 @@ from slack_translator.domain.text import (
 # Room beyond TRANSLATOR_TIMEOUT before the action stops waiting for one attempt (REQ-10).
 ATTEMPT_MARGIN: Final = 3.0
 
+# These requests come from a button on a private message, so their answers replace that message.
+REPLACES_ITS_MESSAGE: Final = ("retry", "offer")
+
 
 class HomeWorkspace:
     """The workspace the bot is installed in. Known after `auth.test` at startup (REQ-05)."""
@@ -90,9 +100,13 @@ class TranslationPolicy:
 
 @dataclass(frozen=True, slots=True)
 class TranslateRequest:
-    """One member asking to read one message. `text` is set on the shortcut, unset on Retry."""
+    """One member asking to read one message.
 
-    entry: Literal["shortcut", "retry"]
+    `text` is set on the shortcut. On Retry and on an offer click it is unset and the message is
+    read again from Slack. An offer click also carries the language the offer named.
+    """
+
+    entry: Literal["shortcut", "retry", "offer"]
     correlation_id: str
     channel: str
     user_id: str
@@ -100,6 +114,8 @@ class TranslateRequest:
     ref: MessageRef
     response_url: ResponseUrl | None
     text: str | None = None
+    language: LanguageCode | None = None
+    script: Script | None = None
 
 
 class TranslateMessage:
@@ -188,27 +204,31 @@ class TranslateMessage:
             await self._finish(request, NothingToTranslate(), "nothing_to_translate", None, None)
             return
 
-        detection = await self._detect(request, cleaned)
-        decision = decide_read(
-            detection,
-            self._policy.languages,
-            self._policy.read_language,
-            self._policy.min_confidence,
-        )
-        if isinstance(decision, AlreadyRead):
-            await self._finish(
-                request,
-                AlreadyInReadLanguage(decision.language),
-                "already_read_language",
-                None,
-                str(detection.language) if detection else None,
+        decision: ReadDecision
+        if request.entry == "offer":
+            decision = self._hint_from_offer(request)
+        else:
+            detection = await self._detect(request, cleaned)
+            decision = decide_read(
+                detection,
+                self._policy.languages,
+                self._policy.read_language,
+                self._policy.min_confidence,
             )
-            return
+            if isinstance(decision, AlreadyRead):
+                await self._finish(
+                    request,
+                    AlreadyInReadLanguage(decision.language),
+                    "already_read_language",
+                    None,
+                    str(detection.language) if detection else None,
+                )
+                return
 
         hint = decision.code if isinstance(decision, Hinted) else None
         source_name = decision.name if isinstance(decision, Hinted) else None
 
-        if request.entry == "retry":
+        if request.entry in REPLACES_ITS_MESSAGE:
             await self._deliver(request, Translating(), quiet=True)
 
         translated = await self._translate(request, text, hint)
@@ -222,6 +242,16 @@ class TranslateMessage:
             source_language_code=hint,
         )
         await self._finish(request, outcome, "shown", self._policy.read_language, hint)
+
+    def _hint_from_offer(self, request: TranslateRequest) -> ReadDecision:
+        """An offer names the language, so there is no detection (FLOW-03). The click translates
+        the current text and the offered language is only a hint: an edit does not change it."""
+        language = next(
+            (lang for lang in self._policy.languages if lang.code == request.language), None
+        )
+        if language is None:
+            return Unhinted()
+        return Hinted(code=language.code, name=language.name, script=request.script)
 
     async def _membership(self, request: TranslateRequest) -> Literal["member"] | RefusalReason:
         """Look the person up, always (decision 23). The payload only allows an early "no".
@@ -305,7 +335,7 @@ class TranslateMessage:
                 pause = retry_pause(first, self._uniform)
                 if pause is None:
                     return None
-            if request.entry == "retry":
+            if request.entry in REPLACES_ITS_MESSAGE:
                 note = asyncio.ensure_future(self._deliver(request, ErrorNotice(), quiet=True))
             await self._clock.sleep(pause)
             with attempt_scope(2):
@@ -375,7 +405,9 @@ class TranslateMessage:
         delivered the result still can.
         """
         message = self._presenter.present(outcome)
-        mode: Literal["new", "replace"] = "replace" if request.entry == "retry" else "new"
+        mode: Literal["new", "replace"] = (
+            "replace" if request.entry in REPLACES_ITS_MESSAGE else "new"
+        )
         thread_ts = request.ref.thread_root_ts
         if request.response_url is not None:
             try:

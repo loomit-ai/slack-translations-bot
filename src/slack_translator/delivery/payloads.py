@@ -5,7 +5,7 @@ whole payload is rejected with `None`. Nothing is guessed.
 """
 
 import re
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from slack_translator.actions.translate_message import TranslateRequest
 from slack_translator.domain.action_values import ActionValueError, parse
@@ -47,6 +47,17 @@ def parse_shortcut(body: dict[str, Any], correlation_id: str) -> TranslateReques
 
 def parse_retry_click(body: dict[str, Any], correlation_id: str) -> TranslateRequest | None:
     """The `translate_retry` button (a `block_actions` payload)."""
+    return _parse_click(body, "retry", correlation_id)
+
+
+def parse_offer_click(body: dict[str, Any], correlation_id: str) -> TranslateRequest | None:
+    """The `translate_offer` button. Its value always names the offered language."""
+    return _parse_click(body, "offer", correlation_id)
+
+
+def _parse_click(
+    body: dict[str, Any], entry: Literal["retry", "offer"], correlation_id: str
+) -> TranslateRequest | None:
     actions = body.get("actions")
     if not isinstance(actions, list) or not actions:
         return None
@@ -56,6 +67,8 @@ def parse_retry_click(body: dict[str, Any], correlation_id: str) -> TranslateReq
     try:
         value = parse(raw_value)
     except ActionValueError:
+        return None
+    if entry == "offer" and value.language is None:
         return None
 
     user = _mapping(body.get("user"))
@@ -68,13 +81,15 @@ def parse_retry_click(body: dict[str, Any], correlation_id: str) -> TranslateReq
         return None
 
     return TranslateRequest(
-        entry="retry",
+        entry=entry,
         correlation_id=correlation_id,
         channel=channel_id,
         user_id=user_id,
         team_id=_string(user.get("team_id")),
         ref=MessageRef(channel=value.channel, ts=value.ts, thread_root_ts=value.thread_root_ts),
         response_url=ResponseUrl(response_url) if response_url is not None else None,
+        language=value.language if entry == "offer" else None,
+        script=value.script if entry == "offer" else None,
     )
 
 

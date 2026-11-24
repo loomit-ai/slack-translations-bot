@@ -3,6 +3,7 @@
 from typing import Any
 
 from slack_translator.domain.action_values import ActionValue, encode
+from slack_translator.domain.languages import LanguageCode
 
 CHANNEL = "C0123ABCDE"
 TS = "1795478400.000100"
@@ -65,3 +66,33 @@ def retry_payload(
             {"action_id": "translate_retry", "type": "button", "value": value, "block_id": "b1"}
         ],
     }
+
+
+def offer_payload(
+    *,
+    value: str | None = None,
+    channel: str = CHANNEL,
+    ts: str = TS,
+    thread_root_ts: str | None = None,
+    language: str | None = "ko",
+    script: str | None = None,
+    user: str = MEMBER,
+    user_team: str | None = HOME,
+    response_url: str = "https://hooks.slack.test/actions/offer",
+) -> dict[str, Any]:
+    """A click on the private offer's button (translate_offer)."""
+    if value is None:
+        value = encode(
+            ActionValue(
+                channel=channel,
+                ts=ts,
+                thread_root_ts=thread_root_ts,
+                language=LanguageCode(language) if language else None,
+                script=script,  # type: ignore[arg-type]
+            )
+        )
+    payload = retry_payload(
+        value=value, channel=channel, user=user, user_team=user_team, response_url=response_url
+    )
+    payload["actions"][0]["action_id"] = "translate_offer"
+    return payload
