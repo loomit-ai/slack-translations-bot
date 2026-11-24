@@ -2,7 +2,7 @@
 UV ?= uv
 IMAGE ?= slack-translator:dev
 
-.PHONY: help install run dev test lint format typecheck imports guards check clean image fake-translator translate-one translate-file
+.PHONY: help install run dev test lint format typecheck imports guards check clean image fake-translator translate-one translate-file translation-page
 
 help: ## Show this list
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*## "} {printf "  %-16s %s\n", $$1, $$2}'
@@ -54,3 +54,7 @@ translate-one: ## Try one message with the model in ENV=lab/local.env (TEXT=, TA
 translate-file: ## Try a file of messages: ENV=lab/local.env FILE=lab/sample.txt (TARGET=, OUT=)
 	@test -n "$(ENV)" -a -n "$(FILE)" || { echo "ENV=lab/local.env and FILE=lab/sample.txt are required"; exit 2; }
 	$(UV) run python scripts/translate_file.py --env "$(ENV)" "$(FILE)" $(if $(TARGET),--target "$(TARGET)") $(if $(OUT),--out "$(OUT)")
+
+translation-page: ## Try translations in the browser, on 127.0.0.1 only: ENV=lab/local.env (PORT=8765)
+	@test -n "$(ENV)" || { echo "ENV=lab/local.env is required (see README, Try translations outside Slack)"; exit 2; }
+	$(UV) run python scripts/translation_page.py --env "$(ENV)" $(if $(PORT),--port "$(PORT)")

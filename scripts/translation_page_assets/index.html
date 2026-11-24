@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Translation test</title>
+  <link rel="stylesheet" href="/app.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <header class="top">
+    <h1>Translation test</h1>
+    <dl class="facts" aria-label="Model in use">
+      <div><dt>Model</dt><dd id="model">…</dd></div>
+      <div><dt>Endpoint</dt><dd id="endpoint">…</dd></div>
+      <div><dt>Privacy</dt><dd id="where" class="where">…</dd></div>
+    </dl>
+  </header>
+
+  <main>
+    <div id="page-problem" class="problem" role="alert" hidden></div>
+
+    <div class="tabs" role="tablist" aria-label="What to translate">
+      <button type="button" role="tab" id="tab-one" aria-controls="panel-one" aria-selected="true">One message</button>
+      <button type="button" role="tab" id="tab-file" aria-controls="panel-file" aria-selected="false" tabindex="-1">A file of messages</button>
+    </div>
+
+    <section id="panel-one" role="tabpanel" aria-labelledby="tab-one" class="split">
+      <form id="one-form" class="card" novalidate>
+        <label for="text">Message</label>
+        <textarea id="text" rows="8" dir="auto" aria-keyshortcuts="Control+Enter" placeholder="Type or paste a message. Ctrl+Enter translates."></textarea>
+        <div class="actions">
+          <label for="target-one">Translate into</label>
+          <select id="target-one"></select>
+          <button type="submit" id="one-go" class="primary">Translate</button>
+        </div>
+      </form>
+
+      <div class="card result" aria-live="polite">
+        <p id="one-idle" class="muted">The translation shows here.</p>
+        <div id="one-working" class="working" hidden>
+          <span class="spinner" aria-hidden="true"></span>
+          <span id="one-working-text"></span>
+          <span id="one-elapsed" class="muted" aria-hidden="true"></span>
+        </div>
+        <div id="one-problem" class="problem" role="alert" hidden></div>
+        <div id="one-result" hidden>
+          <p id="one-translation" class="translation" dir="auto"></p>
+          <ul id="one-facts" class="chips"></ul>
+          <p id="one-detected" class="detail"></p>
+          <p id="one-check" class="check"></p>
+        </div>
+      </div>
+    </section>
+
+    <section id="panel-file" role="tabpanel" aria-labelledby="tab-file" hidden>
+      <form id="file-form" class="card" novalidate>
+        <div class="actions">
+          <label for="file">Messages file (.txt or .csv)</label>
+          <input type="file" id="file" accept=".txt,.csv,text/plain,text/csv">
+          <label for="target-file">Translate into</label>
+          <select id="target-file"></select>
+          <button type="submit" id="file-go" class="primary">Translate file</button>
+          <button type="button" id="file-stop" hidden>Stop</button>
+        </div>
+        <p class="muted small">One message per line, or a CSV with a message, text or source column.</p>
+      </form>
+
+      <div id="file-status" class="statusline" role="status"></div>
+      <div id="file-problem" class="problem" role="alert" hidden></div>
+
+      <section id="file-results" hidden aria-label="Results">
+        <div class="progress-row">
+          <progress id="progress" value="0" max="1" aria-label="Messages translated"></progress>
+          <span id="progress-text" class="muted"></span>
+        </div>
+        <ul id="file-failures" class="failures"></ul>
+        <div id="table-wrap" class="table-wrap" tabindex="0" role="region" aria-label="Results table" hidden>
+          <table>
+            <thead>
+              <tr>
+                <th scope="col" class="num">#</th>
+                <th scope="col">Message</th>
+                <th scope="col">Translation</th>
+                <th scope="col">Checks</th>
+                <th scope="col" class="mark">Rating</th>
+                <th scope="col" class="note">Note</th>
+              </tr>
+            </thead>
+            <tbody id="rows"></tbody>
+          </table>
+        </div>
+        <div class="actions save">
+          <button type="button" id="save" class="primary" disabled>Save results</button>
+          <span id="save-status" class="muted" role="status"></span>
+        </div>
+      </section>
+    </section>
+  </main>
+</body>
+</html>

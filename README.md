@@ -89,6 +89,36 @@ request with the same settings and shows what the provider itself answers (a mod
 exist, a routing rule that matches no endpoint, memory that is not enough). It never sends your
 messages, which is why it can show the provider's words; the translation commands never do.
 
+**In the browser.** The same tool as a page, to read results and mark them by hand:
+
+```sh
+make translation-page ENV=lab/local.env
+```
+
+Open `http://127.0.0.1:8765` (`PORT=8766` if that port is taken). The page listens on this computer
+only, and refuses any other address, so there is no sign-in and nothing outside the computer can
+reach it. It loads nothing from the internet, logs no message text and keeps nothing except the
+results file you save. `make run` and the container never start it.
+
+To point it at a local model, use the same env file as the terminal tools (Ollama:
+`TRANSLATOR_BASE_URL=http://localhost:11434/v1`; LM Studio: `http://localhost:1234/v1`) and start the
+model server first. The model and endpoint in use are always shown at the top, with where your text
+goes: "stays on this computer" for a local model, "is sent to <host>" for a hosted one. The page has
+no model switch: change the env file and start it again.
+
+- **One message.** Type or paste it, choose the language, press Translate (or Ctrl+Enter). It shows
+  the translation, the time, the language Lingua detects with its confidence and whether every Slack
+  mention, link, emoji code and code block survived.
+- **A file of messages.** Choose a `.txt` or `.csv` (the formats above), press Translate file, and
+  the rows appear as they finish; Stop ends the run. Mark each row usable, needs edits or wrong, add
+  a note, and press Save results: the file goes to `lab/results/` (the same columns as the terminal
+  tool, with your ratings and notes). Saving again replaces that file.
+
+When something fails the page says what happened and what to do: the endpoint cannot be reached
+(start the server, or fix `TRANSLATOR_BASE_URL`), the model took too long (raise
+`TRANSLATOR_TIMEOUT`), the server does not know the model (fix `TRANSLATOR_MODEL`), or there is no
+message to translate.
+
 If something looks wrong: `unavailable (HTTP 500)` from a local server usually means the server
 could not load the model, so read its own log (Ollama says when the model does not fit in memory);
 `timeout` means raise `TRANSLATOR_TIMEOUT`; `invalid_response` means an empty or cut-off answer, so
