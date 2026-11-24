@@ -2,6 +2,7 @@
 039, 041, 042, 051, 052, 053, 054, 060; FF-04). Made-up text only."""
 
 import asyncio
+import time
 from typing import Any
 
 import pytest
@@ -19,6 +20,7 @@ from tests.support.payloads import (
 from slack_translator.domain.detection import Detection
 from slack_translator.domain.errors import ModelError, ModelErrorCategory
 from slack_translator.domain.languages import LanguageCode
+from slack_translator.infrastructure.call_context import current_retry_notice
 
 KOREAN = "파란 상자는 어디에 있나요?"
 TIMEOUT = ModelError(ModelErrorCategory.TIMEOUT, "translate")
@@ -454,3 +456,34 @@ class TestArchitectReview:
         [event] = h.telemetry.named("internal_error")
         assert event.fields["exception_type"] == "RuntimeError"
         assert "secret" not in repr(event)
+
+
+class TestRetryNoteTiming:
+    async def test_a_slow_note_never_delays_the_provider_retry_or_replaces_the_result(
+        self, h: Harness
+    ) -> None:
+        h.slack.add_message(CHANNEL, TS, KOREAN)
+        h.slack.delay_next(RESPONSE_URL, 0)  # "Translating…"
+        h.slack.delay_next(RESPONSE_URL, 0.8)  # the error note, slow
+        marks: dict[str, float] = {}
+
+        async def first_attempt_fails_then_the_provider_pauses() -> None:
+            if len(h.translator.calls) > 1:
+                return
+            notice = current_retry_notice()
+            assert notice is not None
+            started = time.perf_counter()
+            await notice(ModelError(ModelErrorCategory.RATE_LIMITED, "translate", 429))
+            await asyncio.sleep(0.2)  # the provider's retry pause
+            marks["until_second_attempt"] = time.perf_counter() - started
+
+        h.translator.on_call = first_attempt_fails_then_the_provider_pauses
+        await h.deliver_and_settle(retry_payload(response_url=h.slack.response_url()))
+
+        assert marks["until_second_attempt"] < 0.5
+        assert [post["text"] for post in response_url_posts(h)] == [
+            "Translating…",
+            "An error has occurred…",
+            "English translation from Korean\nWhere is the blue box?",
+        ]
+        h.slack.assert_no_public_writes()

@@ -1,7 +1,7 @@
 """In-process fakes for the domain ports (TS-03, TS-06, TS-07). Made-up text only."""
 
 import asyncio
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -63,6 +63,7 @@ class ScriptedTranslator:
         self.script: list[str | Exception] = list(script) or ["translated text"]
         self.calls: list[TranslateCall] = []
         self.hold: asyncio.Event | None = None
+        self.on_call: Callable[[], Awaitable[None]] | None = None
         self._timeline = timeline
 
     async def translate(
@@ -74,6 +75,8 @@ class ScriptedTranslator:
         self.calls.append(TranslateCall(text, target_language, source_language_hint))
         if self._timeline is not None:
             self._timeline.append("translator")
+        if self.on_call is not None:
+            await self.on_call()
         if self.hold is not None:
             await self.hold.wait()
         index = min(len(self.calls) - 1, len(self.script) - 1)

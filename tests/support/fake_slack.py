@@ -43,6 +43,7 @@ class _Fault:
     status: int = 200
     body: dict[str, Any] | None = None
     headers: dict[str, str] = field(default_factory=dict)
+    delay: float = 0.0
 
 
 class FakeSlackServer:
@@ -120,6 +121,10 @@ class FakeSlackServer:
         """Close the connection without answering the next call to `method`."""
         self._faults.setdefault(method, []).append(_Fault(status=-1))
 
+    def delay_next(self, method: str, seconds: float) -> None:
+        """Answer the next call to `method` normally, but only after `seconds`."""
+        self._faults.setdefault(method, []).append(_Fault(delay=seconds))
+
     def hold(self, method: str) -> asyncio.Event:
         """Make `method` wait until the returned event is set."""
         event = asyncio.Event()
@@ -153,6 +158,9 @@ class FakeSlackServer:
         if method in self._holds:
             await self._holds[method].wait()
         fault = self._next_fault(method)
+        if fault is not None and fault.delay:
+            await asyncio.sleep(fault.delay)
+            fault = None
         if fault is not None:
             if fault.status == -1 and request.transport is not None:
                 request.transport.close()
@@ -174,6 +182,9 @@ class FakeSlackServer:
         if RESPONSE_URL in self._holds:
             await self._holds[RESPONSE_URL].wait()
         fault = self._next_fault(RESPONSE_URL)
+        if fault is not None and fault.delay:
+            await asyncio.sleep(fault.delay)
+            fault = None
         if fault is not None:
             return web.Response(text=(fault.body or {}).get("error", "error"), status=fault.status)
         return web.Response(text="ok")

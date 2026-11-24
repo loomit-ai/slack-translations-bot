@@ -113,6 +113,7 @@ class TranslateMessage:
         self._directory = directory
         self._presenter = presenter
         self._telemetry = telemetry
+        self._notices: dict[str, list[asyncio.Task[bool]]] = {}
 
     async def run(self, request: TranslateRequest) -> None:
         if not await self._admit(request):
@@ -133,6 +134,8 @@ class TranslateMessage:
                 exception_type=type(error).__name__, correlation_id=request.correlation_id
             )
             await self._finish(request, self._failure(request), "failed", None, None)
+        finally:
+            await self._settle_notices(request)
 
     async def _admit(self, request: TranslateRequest) -> bool:
         """The boundary checks (REQ-04, REQ-05). Only a request that passes them is counted.
@@ -162,10 +165,19 @@ class TranslateMessage:
         """
 
         async def notice(_: ModelError) -> None:
+            # The note is sent beside the retry, never in front of it: the provider retry must not
+            # wait for Slack. `_settle_notices` makes the result wait for the note instead, so
+            # the note can never replace the result.
             if request.entry == "retry":
-                await self._deliver(request, ErrorNotice(), quiet=True)
+                task = asyncio.ensure_future(self._deliver(request, ErrorNotice(), quiet=True))
+                self._notices.setdefault(request.correlation_id, []).append(task)
 
         return notice
+
+    async def _settle_notices(self, request: TranslateRequest) -> None:
+        tasks = self._notices.pop(request.correlation_id, [])
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _run(self, request: TranslateRequest) -> None:
         text = request.text
@@ -318,6 +330,7 @@ class TranslateMessage:
         target_language: str | None,
         language: str | None,
     ) -> None:
+        await self._settle_notices(request)
         delivered = await self._deliver(request, outcome)
         self._telemetry.translate_completed(
             entry=request.entry,
