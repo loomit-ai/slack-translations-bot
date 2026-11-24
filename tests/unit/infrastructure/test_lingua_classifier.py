@@ -5,6 +5,7 @@ import secrets
 import threading
 import time
 from collections.abc import AsyncIterator, Sequence
+from typing import Any, cast
 
 import pytest
 from tests.support.model_fakes import RecordingTelemetry, SteppingClock
@@ -210,6 +211,47 @@ async def test_confidence_is_the_lead_of_the_top_language_over_the_runner_up(
         assert await adapter.detect(K1, SEED) == expected
     finally:
         await adapter.aclose()
+
+
+def loose_scores(*items: Any) -> Scorer:
+    """A detector that answers with whatever it is given, even things that are not scores."""
+
+    def scorer(text: str) -> Sequence[tuple[str, float]]:
+        return cast(Sequence[tuple[str, float]], items)
+
+    return scorer
+
+
+@pytest.mark.parametrize(
+    "ranked",
+    [
+        (("en", "0.9"), ("tl", 0.05)),
+        (("en", None), ("tl", 0.05)),
+        (("en", True), ("tl", 0.05)),
+        (("en", [0.9]), ("tl", 0.05)),
+        (("en", 0.9), ("tl", None)),
+        (("en", 0.9), ("tl", "0.05")),
+        (("en", 0.9), ("tl", float("inf"))),
+        ((None, 0.9), ("tl", 0.05)),
+        ((7, 0.9), ("tl", 0.05)),
+        (("en",), ("tl", 0.05)),
+        (("en", 0.9, "extra"), ("tl", 0.05)),
+        ("en", ("tl", 0.05)),
+        (None, ("tl", 0.05)),
+        (("en", 0.9), None),
+        (("en", 0.9), "tl"),
+    ],
+)
+async def test_values_that_are_not_scores_abstain_instead_of_raising(
+    recorder: RecordingTelemetry, ranked: tuple[Any, ...]
+) -> None:
+    adapter = with_scorer(recorder, loose_scores(*ranked))
+    try:
+        assert await adapter.detect(K1, SEED) == Detection("other", 0.0)
+    finally:
+        await adapter.aclose()
+
+    assert [r.outcome for r in recorder.records] == ["ok"]
 
 
 async def test_a_low_raw_score_with_a_clear_lead_still_names_the_language(
