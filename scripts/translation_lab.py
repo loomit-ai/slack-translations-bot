@@ -261,36 +261,48 @@ class Outcome:
     notes: str = ""
 
 
+_FORMULA_STARTS: Final = ("=", "+", "-", "@", "\t", "\r")
+
+
+def spreadsheet_safe(value: str | int) -> str | int:
+    """A text a spreadsheet would run as a formula gets a leading apostrophe, which Excel and
+    Sheets show as plain text. Source text comes from customers and translations from a model, so
+    a results file must never carry a live formula. Numbers and other text are left as they are."""
+    if isinstance(value, str) and value.startswith(_FORMULA_STARTS):
+        return f"'{value}"
+    return value
+
+
 def write_results(path: Path, outcomes: Sequence[Outcome], profile: Profile) -> None:
     """One row per message, with `rating` (one of `RATINGS`) and `notes` columns. The terminal
     tools leave them empty for a person to fill in; the page fills them from the person's marks.
+    A cell that would be a formula in a spreadsheet gets a leading apostrophe (`spreadsheet_safe`).
     UTF-8 with a byte-order mark so a spreadsheet reads Korean."""
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8-sig", newline="") as handle:
         writer = csv.writer(handle)
         writer.writerow(RESULT_COLUMNS)
         for outcome in outcomes:
-            writer.writerow(
-                [
-                    outcome.source,
-                    outcome.translation,
-                    outcome.target,
-                    f"{outcome.seconds:.2f}",
-                    "yes" if outcome.worked else "no",
-                    outcome.error,
-                    "" if outcome.http_status is None else outcome.http_status,
-                    outcome.check.describe() if outcome.worked else "",
-                    outcome.detected_code or "",
-                    "" if outcome.lead is None else f"{outcome.lead:.3f}",
-                    outcome.decision,
-                    profile.model,
-                    profile.host,
-                    "" if outcome.prompt_tokens is None else outcome.prompt_tokens,
-                    "" if outcome.completion_tokens is None else outcome.completion_tokens,
-                    outcome.rating,
-                    outcome.notes,
-                ]
-            )
+            row = [
+                outcome.source,
+                outcome.translation,
+                outcome.target,
+                f"{outcome.seconds:.2f}",
+                "yes" if outcome.worked else "no",
+                outcome.error,
+                "" if outcome.http_status is None else outcome.http_status,
+                outcome.check.describe() if outcome.worked else "",
+                outcome.detected_code or "",
+                "" if outcome.lead is None else f"{outcome.lead:.3f}",
+                outcome.decision,
+                profile.model,
+                profile.host,
+                "" if outcome.prompt_tokens is None else outcome.prompt_tokens,
+                "" if outcome.completion_tokens is None else outcome.completion_tokens,
+                outcome.rating,
+                outcome.notes,
+            ]
+            writer.writerow([spreadsheet_safe(cell) for cell in row])
 
 
 class _Records:

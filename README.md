@@ -82,7 +82,10 @@ Each message is translated once; one that fails becomes a row, not a stop. The r
 `lab/results/` as a CSV that opens in a spreadsheet with the Korean intact: source, translation,
 target, seconds, whether it worked, the error kind, the Slack token check, Lingua's language and
 lead, the model and endpoint, token counts, and empty `rating` (`usable`, `needs edits` or `wrong`)
-and `notes` columns for you. Progress and the summary never print message text.
+and `notes` columns for you. Progress and the summary never print message text. A text that a
+spreadsheet would run as a formula (it starts with `=`, `+`, `-`, `@`, a tab or a carriage return)
+gets a leading apostrophe, so opening the file in Excel or Sheets never runs it; the page does the
+same.
 
 If a model fails, `make translate-one ENV=lab/local.env DIAGNOSE=1` sends one fixed, made-up
 request with the same settings and shows what the provider itself answers (a model that does not

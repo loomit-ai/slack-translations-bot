@@ -270,6 +270,64 @@ class TestResultsFile:
         assert "그는 안녕이라고 말했다" in path.read_text(encoding="utf-8-sig")
 
 
+class TestSpreadsheetSafety:
+    """Source text comes from customers and translations from a model, so a results file opened
+    in Excel or Sheets must never run one of them as a formula."""
+
+    @pytest.mark.parametrize("start", ["=", "+", "-", "@", "\t", "\r"])
+    def test_a_cell_a_spreadsheet_would_run_as_a_formula_gets_a_leading_apostrophe(
+        self, start: str
+    ) -> None:
+        assert lab.spreadsheet_safe(f"{start}SUM(A1:A9)") == f"'{start}SUM(A1:A9)"
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "",
+            "plain text",
+            "'already quoted",
+            "a=b",
+            "x +1",
+            " =after a space",
+            "two\n=lines",
+            12,
+            0,
+        ],
+    )
+    def test_anything_else_is_left_exactly_as_it_is(self, value: object) -> None:
+        assert lab.spreadsheet_safe(value) == value
+
+    def test_every_text_column_of_the_results_file_is_made_safe_and_the_numbers_are_not(
+        self, tmp_path: Path
+    ) -> None:
+        profile = lab.load_profile(write_env(tmp_path, MINIMAL, "local.env"))
+        outcome = lab.Outcome(
+            source='=HYPERLINK("http://evil.example","x")',
+            translation="@SUM(1+1)",
+            target="en",
+            seconds=1.5,
+            worked=False,
+            error="+cmd",
+            http_status=500,
+            decision="-1+1",
+            rating="wrong",
+            notes="\t=1+1",
+        )
+        path = tmp_path / "r.csv"
+
+        lab.write_results(path, [outcome], profile)
+
+        with path.open(encoding="utf-8-sig", newline="") as handle:
+            [row] = list(csv.DictReader(handle))
+        assert row["source"] == '\'=HYPERLINK("http://evil.example","x")'
+        assert row["translation"] == "'@SUM(1+1)"
+        assert row["error"] == "'+cmd"
+        assert row["bot_decision"] == "'-1+1"
+        assert row["notes"] == "'\t=1+1"
+        assert (row["seconds"], row["http_status"], row["rating"]) == ("1.50", "500", "wrong")
+        assert not any(cell.startswith(("=", "+", "-", "@", "\t", "\r")) for cell in row.values())
+
+
 class TestDefaultResultsPath:
     def test_it_goes_into_the_ignored_lab_folder_named_after_sample_profile_and_target(
         self, tmp_path: Path

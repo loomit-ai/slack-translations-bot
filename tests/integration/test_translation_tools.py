@@ -321,6 +321,25 @@ class TestAFileOfMessages:
         assert row["detected_language"] != "" and row["lead"] != ""
         assert row["bot_decision"] != ""
 
+    async def test_a_customer_message_or_a_model_answer_that_is_a_formula_is_neutralised(
+        self, fake: FakeTranslatorServer, tmp_path: Path
+    ) -> None:
+        fake.enqueue(Answer("@SUM(1+1)"), Answer("-2+3"), Answer("fine"))
+        sample = tmp_path / "sample.txt"
+        sample.write_text("=1+1\n+cmd|' /C calc'!A0\nwhat is =1+1 ?\n", encoding="utf-8")
+        out = tmp_path / "results.csv"
+
+        done = await run_tool(
+            "translate_file.py", "--env", str(write_profile(tmp_path, fake)), str(sample),
+            "--out", str(out), "--no-detect",
+        )  # fmt: skip
+
+        assert done.returncode == 0, done.stderr
+        rows = read_rows(out)
+        assert [r["source"] for r in rows] == ["'=1+1", "'+cmd|' /C calc'!A0", "what is =1+1 ?"]
+        assert [r["translation"] for r in rows] == ["'@SUM(1+1)", "'-2+3", "fine"]
+        assert fake.requests[0].user_text == "=1+1"
+
     async def test_neither_progress_nor_summary_prints_any_message_text(
         self, fake: FakeTranslatorServer, tmp_path: Path
     ) -> None:

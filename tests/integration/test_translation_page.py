@@ -782,6 +782,24 @@ class TestSavingTheMarks:
 
         assert status == 409 and body["problem"]["kind"] == "busy"
 
+    async def test_a_message_an_answer_or_a_note_that_is_a_formula_is_neutralised_in_the_file(
+        self, served: Served
+    ) -> None:
+        served.fake.enqueue(Answer("@SUM(1+1)"))
+        await served.start_file('=HYPERLINK("http://evil.example")\n')
+        job = await served.finished_job()
+
+        _, saved = await served.post(
+            "/api/job/save", {"id": job["id"], "marks": [{"rating": "wrong", "note": "-1+1"}]}
+        )
+
+        [row] = read_rows(Path(saved["path"]))
+        assert row["source"] == '\'=HYPERLINK("http://evil.example")'
+        assert row["translation"] == "'@SUM(1+1)"
+        assert row["notes"] == "'-1+1"
+        assert (row["rating"], row["worked"]) == ("wrong", "yes")
+        assert served.fake.requests[0].user_text == '=HYPERLINK("http://evil.example")'
+
     async def test_the_browser_cannot_choose_where_the_file_goes(self, served: Served) -> None:
         await served.start_file("one\n", name="../../../evil.txt")
         job = await served.finished_job()
