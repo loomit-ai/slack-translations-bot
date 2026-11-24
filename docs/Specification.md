@@ -77,7 +77,7 @@ Runtime configuration:
 | `MEMBER_EMAIL_DOMAINS` | Email domains that make a person of the X3M workspace an X3M member. The whole domain must match | `x3mads.com`, `loomit.ai` |
 | `CONFIG_CACHE_TTL` | How often the bot rereads `settings.json`, to pick up manual edits | 60 s |
 | `READ_LANGUAGE` | Target language of step 9. Always a team language | `en` |
-| `CLASSIFIER_MIN_CONFIDENCE` | Below this value, no offer | 0.8 until the language test on Lingua sets it |
+| `CLASSIFIER_MIN_CONFIDENCE` | How far the top language must lead the runner-up, across all the languages Lingua knows: the top score divided by the sum of the top two. Below this value, no offer. Valid from 0.5 to 1 | 0.7, to be tuned from the Korean sample |
 | `CLASSIFIER_TIMEOUT`, `TRANSLATOR_TIMEOUT` | Limits per call. For the classifier it caps the local detection, not a network call | 3 s, 20 s |
 | `TRANSLATOR_BASE_URL`, `TRANSLATOR_MODEL`, `TRANSLATOR_API_KEY` | The OpenAI-compatible endpoint | Required |
 | `DRAFT_TTL` | Lifetime of an unsent reply draft, kept in memory | 30 min |
@@ -191,7 +191,7 @@ Every human message in an allowlisted channel is classified, and a result in a c
    - there is no `bot_id` and `text` is not empty;
    - after removing mentions, links, emoji codes and code blocks, at least a few letters remain (proposed minimum: 3).
 3. **Step 3, detect language.** Call `LanguageClassifier.detect` with the cleaned text and every configured language as `candidates` (see Language configuration). Detection runs inside the bot with Lingua, so the text is not sent anywhere at this step.
-4. **Step 4, decision.** Continue only when the result is a configured customer language with confidence at or above `CLASSIFIER_MIN_CONFIDENCE`. Stop silently for a team language, for `other`, for lower confidence, or when the call fails or times out. This is the "English or Spanish: stop here" note on the diagram; English and Spanish are the default team languages.
+4. **Step 4, decision.** Continue only when the result is a configured customer language with confidence at or above `CLASSIFIER_MIN_CONFIDENCE`. Confidence here is the lead of the top language over the runner-up (the top score divided by the sum of the top two), not Lingua's raw score, which stays low for languages that share the Latin script. Stop silently for a team language, for `other`, for lower confidence, or when the call fails or times out. This is the "English or Spanish: stop here" note on the diagram; English and Spanish are the default team languages.
 5. **Step 5, private offer.** Build the recipient list, then send one ephemeral message per recipient.
    - **Recipients:** call `conversations.members` (paginated) and keep the users who are X3M members (see Check the boundary), using `users.info`. Drop bots, deactivated users and the message author. Cache both lookups for about 10 minutes, keeping only the email domain, never the address. Members who read the language still get the offer.
    - **Message:** send with [`chat.postEphemeral`](https://docs.slack.dev/reference/methods/chat.postEphemeral), passing `channel`, `user`, a fallback `text`, and blocks with a line such as "Message in Korean" and a button "Translate this message".
@@ -401,7 +401,7 @@ The points below are assumed in this spec and still need a decision from X3M, ex
 | Members who read a customer language | **Decided Nov 24, 2026:** they still get offers in the first version. Version 1.1 adds an "I speak {language}" button to stop offers for that language | Nothing left to decide |
 | A send that times out | **Decided Nov 24, 2026:** tell the member it may have been sent, and never retry automatically | Nothing left to decide |
 | Which messages are classified | **Decided Nov 24, 2026:** every human message, from customers and X3M members alike. Offers go to each X3M member except the author | Nothing left to decide |
-| Model choices | **Classifier decided Nov 23, 2026:** Lingua (`lingua-py`), inside the bot. Translator: Gemini 3.7 Flash through OpenRouter, proposed | Confirm the translator, and set the Lingua confidence threshold, with a test on real messages. Federico is gathering 20 or more Korean messages written by native speakers |
+| Model choices | **Classifier decided Nov 23, 2026:** Lingua (`lingua-py`), inside the bot. **Confidence rule decided Nov 24, 2026:** the lead of the top language over the runner-up, starting at 0.7. Translator: Gemini 3.7 Flash through OpenRouter, proposed | Confirm the translator, and tune the 0.7 from a test on real messages. Federico is gathering 20 or more Korean messages written by native speakers |
 | Data leaving Slack | Customer text goes to the translation provider when a member asks. Detection is local | Confirm that customer agreements allow it, and choose a route with no training and low retention |
 | Approving unread text | The member approves, and can now edit, a translation they may not be able to read | Add a back-translation line to the preview, refreshed after each edit, at the cost of one more model call per change |
 | Sent content | The translation only | Whether to append the member's original text for transparency |
