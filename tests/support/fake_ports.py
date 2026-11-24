@@ -116,6 +116,12 @@ class RecordingTelemetry:
     def shutdown(self) -> None:
         self._record("shutdown")
 
+    def startup_serving(self, **fields: Any) -> None:
+        self._record("startup_serving", **fields)
+
+    def channel_changed(self, **fields: Any) -> None:
+        self._record("channel_changed", **fields)
+
     def request_refused(self, **fields: Any) -> None:
         self._record("request_refused", **fields)
 

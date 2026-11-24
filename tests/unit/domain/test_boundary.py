@@ -29,6 +29,11 @@ def test_channels_on_the_allowlist_are_allowed_and_others_are_not() -> None:
     assert not channel_is_allowed("D0123ABCDE", allowlist)
 
 
+@pytest.mark.parametrize("channel", ["C0123ABCDE", "G0123ABCDE", "D0123ABCDE"])
+def test_an_empty_list_does_not_narrow_anything(channel: str) -> None:
+    assert channel_is_allowed(channel, ())
+
+
 @pytest.mark.parametrize("domain", ["x3mads.com", "loomit.ai", "X3MADS.COM"])
 def test_an_active_human_of_the_home_workspace_with_an_allowed_domain_is_a_member(
     domain: str,

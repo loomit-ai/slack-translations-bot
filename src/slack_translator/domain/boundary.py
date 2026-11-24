@@ -8,7 +8,8 @@ from slack_translator.domain.ports import RefusalReason
 
 
 def channel_is_allowed(channel: str, allowlist: Collection[str]) -> bool:
-    return channel in allowlist
+    """With a list, only its channels; with none, membership of the bot decides (decision 25)."""
+    return not allowlist or channel in allowlist
 
 
 def membership(

@@ -112,6 +112,22 @@ class OfferSender(Protocol):
     async def send(self, request: OfferRequest) -> None: ...
 
 
+class ServedChannels(Protocol):
+    """Decision 25 / CR-11: a channel is served when the bot is a member of it.
+
+    `is_served` asks Slack and remembers the answer (yes for 10 minutes, no for 60 seconds); an
+    error or a channel Slack will not show means "not served" and is not remembered.
+    `note_event_from` records that an event arrived from the channel, which proves the bot is in
+    it. `forget` drops a channel the bot has left.
+    """
+
+    async def is_served(self, channel_id: str) -> bool: ...
+
+    def note_event_from(self, channel_id: str) -> None: ...
+
+    def forget(self, channel_id: str) -> None: ...
+
+
 class ReadPresenter(Protocol):
     """Turns an outcome into the private message for it (Design UI-03 to UI-09, UI-18)."""
 
@@ -140,6 +156,12 @@ class Telemetry(Protocol):
     def startup_channel_not_member(self, *, channel_id: str) -> None: ...
 
     def shutdown(self) -> None: ...
+
+    def startup_serving(self, *, channel_count: int) -> None: ...
+
+    def channel_changed(
+        self, *, change: Literal["joined", "left"], channel_id: str, user_id: str | None
+    ) -> None: ...
 
     def request_refused(
         self,
