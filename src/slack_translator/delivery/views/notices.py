@@ -29,7 +29,7 @@ def unavailable_message() -> PrivateMessage:
 
 
 def not_allowed_message() -> PrivateMessage:
-    return _notice("Translation is available only in approved channels.")
+    return _notice("X3M Translator is unavailable in this channel.", "plain_text")
 
 
 def no_text_message() -> PrivateMessage:

@@ -36,8 +36,11 @@ class Settings(BaseSettings):
         hide_input_in_errors=True,
     )
 
-    # CFG-01
-    channel_allowlist: Annotated[tuple[str, ...], NoDecode]
+    # CFG-13 comes first: whether the channel list may be empty depends on it
+    app_env: Literal["development", "staging", "production"]
+    # CFG-01: with a list the bot serves only those of them it is in; with none it serves every
+    # channel it is in (decision 25). Required in development and staging.
+    channel_allowlist: Annotated[tuple[str, ...], Field(validate_default=True), NoDecode] = ()
     # CFG-02
     language_seed: Annotated[tuple[ConfiguredLanguage, ...], NoDecode] = parse_language_seed(
         DEFAULT_LANGUAGE_SEED
@@ -62,8 +65,6 @@ class Settings(BaseSettings):
     slack_app_token: SecretStr
     # CFG-12
     slack_mode: Literal["socket", "http"] = "socket"
-    # CFG-13
-    app_env: Literal["development", "staging", "production"]
     # CFG-14
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
     # CFG-15
@@ -92,12 +93,23 @@ class Settings(BaseSettings):
     @field_validator("channel_allowlist", mode="before")
     @classmethod
     def _parse_allowlist(cls, value: object) -> tuple[str, ...]:
+        if isinstance(value, tuple) and not value:
+            return ()
         if not isinstance(value, str):
             raise ValueError("must be a comma-separated list of channel IDs")
         ids = [part.strip() for part in value.split(",")]
         if not ids or any(not _CHANNEL_ID.match(channel) for channel in ids):
             raise ValueError("must list channel IDs such as C0123ABCDE or G0123ABCDE")
         return tuple(dict.fromkeys(ids))
+
+    @field_validator("channel_allowlist")
+    @classmethod
+    def _list_required_where_a_test_build_could_read_a_real_channel(
+        cls, value: tuple[str, ...], info: ValidationInfo
+    ) -> tuple[str, ...]:
+        if not value and info.data.get("app_env") in ("development", "staging"):
+            raise ValueError("must list the channels a development or staging build may read")
+        return value
 
     @field_validator("language_seed", mode="before")
     @classmethod

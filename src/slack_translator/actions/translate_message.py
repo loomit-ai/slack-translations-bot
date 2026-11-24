@@ -44,6 +44,7 @@ from slack_translator.domain.ports import (
     PrivateResponder,
     ReadPresenter,
     RefusalReason,
+    ServedChannels,
     Telemetry,
     TranslateOutcome,
     Translator,
@@ -61,6 +62,7 @@ class HomeWorkspace:
 
     def __init__(self) -> None:
         self.team_id: str | None = None
+        self.bot_user_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,6 +104,7 @@ class TranslateMessage:
         responder: PrivateResponder,
         reader: MessageReader,
         directory: MemberDirectory,
+        served: ServedChannels,
         presenter: ReadPresenter,
         telemetry: Telemetry,
     ) -> None:
@@ -112,6 +115,7 @@ class TranslateMessage:
         self._responder = responder
         self._reader = reader
         self._directory = directory
+        self._served = served
         self._presenter = presenter
         self._telemetry = telemetry
         self._notices: dict[str, list[asyncio.Task[bool]]] = {}
@@ -153,7 +157,9 @@ class TranslateMessage:
         if verdict != "member":
             self._refuse(request, verdict)
             return False
-        if not channel_is_allowed(request.channel, self._policy.allowlist):
+        if not channel_is_allowed(request.channel, self._policy.allowlist) or not (
+            await self._served.is_served(request.channel)
+        ):
             self._refuse(request, "channel")
             await self._deliver(request, ChannelNotAllowed())
             return False

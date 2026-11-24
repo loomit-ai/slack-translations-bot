@@ -19,7 +19,7 @@ from slack_translator.delivery.views.notices import (
         (error_notice_message(), "An error has occurred…"),
         (already_read_message("English"), "This message is already in English."),
         (unavailable_message(), "This message is no longer available."),
-        (not_allowed_message(), "Translation is available only in approved channels."),
+        (not_allowed_message(), "X3M Translator is unavailable in this channel."),
         (no_text_message(), "This message has no text to translate."),
     ],
 )
@@ -31,6 +31,8 @@ def test_each_notice_is_a_single_section_with_an_identical_fallback(message, sen
     assert block["text"]["text"] == sentence
 
 
-@pytest.mark.parametrize("message", [progress_message(), error_notice_message()])
+@pytest.mark.parametrize(
+    "message", [progress_message(), error_notice_message(), not_allowed_message()]
+)
 def test_the_progress_notes_are_plain_text_sections_as_ui_03_specifies(message) -> None:
     assert message.blocks[0]["text"]["type"] == "plain_text"

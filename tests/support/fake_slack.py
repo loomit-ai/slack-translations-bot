@@ -23,6 +23,7 @@ READ_METHODS = frozenset(
         "conversations.replies",
         "conversations.info",
         "conversations.members",
+        "users.conversations",
     }
 )
 PRIVATE_WRITE_METHODS = frozenset({"chat.postEphemeral", "views.open"})
@@ -223,6 +224,12 @@ class FakeSlackServer:
                 if channel
                 else {"ok": False, "error": "channel_not_found"}
             )
+        if method == "users.conversations":
+            return {
+                "ok": True,
+                "channels": [dict(c) for c in self.channels.values() if c.get("is_member")],
+                "response_metadata": {"next_cursor": ""},
+            }
         if method == "conversations.members":
             return {
                 "ok": True,

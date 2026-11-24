@@ -37,6 +37,7 @@ from slack_translator.domain.ports import (
     Clock,
     LanguageClassifier,
     OfferSender,
+    ServedChannels,
     Telemetry,
     Translator,
 )
@@ -108,6 +109,7 @@ class Application:
         telemetry: Telemetry,
         authorization: _Authorization,
         offers: OfferSender,
+        served: ServedChannels,
         listener_names: tuple[str, ...],
         preloads: list[Callable[[], Awaitable[None]]],
         closers: list[Callable[[], Awaitable[None]]],
@@ -119,6 +121,7 @@ class Application:
         self.readiness = readiness
         self.listener_names = listener_names
         self.offers = offers
+        self.served = served
         self._client = client
         self._gateway = gateway
         self._home = home
@@ -138,10 +141,9 @@ class Application:
         auth = await self._client.auth_test()
         self._require_email_scope(auth)
         self._home.team_id = str(auth["team_id"])
+        self._home.bot_user_id = auth.get("user_id")
         self._authorization.set(self._home.team_id, auth.get("bot_id"), auth.get("user_id"))
-        for channel in self.settings.channel_allowlist:
-            if not await self._bot_is_member(channel):
-                self._telemetry.startup_channel_not_member(channel_id=channel)
+        await self._learn_served_channels()
 
     @staticmethod
     def _require_email_scope(auth: object) -> None:
@@ -153,6 +155,24 @@ class Application:
         scopes = {key.lower(): value for key, value in headers.items()}.get("x-oauth-scopes")
         if scopes is not None and EMAIL_SCOPE not in {s.strip() for s in str(scopes).split(",")}:
             raise MissingScope("the bot token lacks the users:read.email scope")
+
+    async def _learn_served_channels(self) -> None:
+        """With a list: warn about each listed channel the bot is not in. Without one: ask Slack
+        which channels it is in. A failure of that call is counted and is not fatal (CR-11)."""
+        if self.settings.channel_allowlist:
+            for channel in self.settings.channel_allowlist:
+                if await self._bot_is_member(channel):
+                    self.served.note_event_from(channel)
+                else:
+                    self._telemetry.startup_channel_not_member(channel_id=channel)
+            return
+        try:
+            channels = await self._gateway.joined_channels()
+        except Exception:
+            return
+        for channel in channels:
+            self.served.note_event_from(channel)
+        self._telemetry.startup_serving(channel_count=len(channels))
 
     def mark_ready(self) -> None:
         """Ready means able to receive: only called once the transport is connected (REQ-11)."""
@@ -239,6 +259,7 @@ def create_app(settings: Settings, overrides: Overrides | None = None) -> Applic
         responder=gateway,
         reader=gateway,
         directory=gateway,
+        served=gateway,
         presenter=presenter,
         telemetry=telemetry,
     )
@@ -276,6 +297,8 @@ def create_app(settings: Settings, overrides: Overrides | None = None) -> Applic
         ListenerContext(
             translate_message=translate_message,
             offers=send_offers,
+            served=gateway,
+            home=home,
             registry=registry,
             telemetry=telemetry,
             clock=clock,
@@ -298,6 +321,7 @@ def create_app(settings: Settings, overrides: Overrides | None = None) -> Applic
         telemetry,
         authorization,
         send_offers,
+        gateway,
         listener_names,
         preloads,
         closers,

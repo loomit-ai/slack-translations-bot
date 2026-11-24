@@ -107,7 +107,13 @@ class TestAcknowledgement:
         assert h.translator.calls
 
     async def test_every_registered_listener_has_an_acknowledgement_test(self, h: Harness) -> None:
-        covered = {"translate_message", "translate_retry"}
+        covered = {
+            "translate_message",
+            "translate_retry",
+            # Bolt acknowledges events itself before it runs their listeners.
+            "member_joined_channel",
+            "member_left_channel",
+        }
         assert set(h.app.listener_names) == covered
 
 
@@ -198,10 +204,7 @@ class TestBoundary:
     ) -> None:
         await h.deliver_and_settle(shortcut(h, channel="C0OTHERXYZ"))
         assert h.classifier.calls == [] and h.translator.calls == []
-        assert (
-            response_url_posts(h)[0]["text"]
-            == "Translation is available only in approved channels."
-        )
+        assert response_url_posts(h)[0]["text"] == "X3M Translator is unavailable in this channel."
         assert [e.fields["reason"] for e in h.telemetry.named("request_refused")] == ["channel"]
         h.slack.assert_no_public_writes()
 
@@ -625,7 +628,7 @@ class TestMembership:
         assert [e.fields["reason"] for e in h.telemetry.named("request_refused")] == ["channel"]
         assert h.translator.calls == []
         assert response_url_posts(h)[0]["text"] == (
-            "Translation is available only in approved channels."
+            "X3M Translator is unavailable in this channel."
         )
 
 

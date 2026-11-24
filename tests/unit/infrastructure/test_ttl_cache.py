@@ -40,3 +40,11 @@ def test_setting_a_key_again_renews_its_lifetime() -> None:
     cache.set("a", 2)
     clock.advance(8)
     assert cache.get("a") == 2
+
+
+def test_a_discarded_key_is_gone_and_discarding_a_missing_key_is_harmless() -> None:
+    cache: TtlCache[str, int] = TtlCache(FakeClock(), ttl=600, max_size=5)
+    cache.set("a", 1)
+    cache.discard("a")
+    cache.discard("never set")
+    assert cache.get("a") is None

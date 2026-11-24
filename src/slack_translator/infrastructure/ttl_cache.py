@@ -20,6 +20,9 @@ class TtlCache[K, V]:
             return None
         return value
 
+    def discard(self, key: K) -> None:
+        self._entries.pop(key, None)
+
     def set(self, key: K, value: V) -> None:
         self._entries.pop(key, None)
         while len(self._entries) >= self._max_size:

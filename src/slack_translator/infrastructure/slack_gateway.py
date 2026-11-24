@@ -29,6 +29,8 @@ from slack_translator.infrastructure.ttl_cache import TtlCache
 RESPONSE_URL_MAX_USES = 5
 RESPONSE_URL_LIFETIME = 30 * 60
 LOOKUP_LIFETIME = 10 * 60
+SERVED_LIFETIME = 10 * 60
+NOT_SERVED_LIFETIME = 60
 RETRY_AFTER_LIMIT = 5.0
 _GONE = frozenset({"message_not_found", "thread_not_found", "channel_not_found"})
 
@@ -48,6 +50,8 @@ class SlackGateway:
         self._url_use: dict[str, tuple[float, int]] = {}
         self._users: TtlCache[str, UserFacts] = TtlCache(clock, LOOKUP_LIFETIME, 5000)
         self._members: TtlCache[str, Sequence[str]] = TtlCache(clock, LOOKUP_LIFETIME, 200)
+        self._served_yes: TtlCache[str, bool] = TtlCache(clock, SERVED_LIFETIME, 5000)
+        self._served_no: TtlCache[str, bool] = TtlCache(clock, NOT_SERVED_LIFETIME, 5000)
 
     async def aclose(self) -> None:
         await self._http.aclose()
@@ -185,6 +189,55 @@ class SlackGateway:
             # An answer without a workspace is incomplete: it must not stick for 10 minutes.
             self._users.set(user_id, facts)
         return facts
+
+    async def is_served(self, channel_id: str) -> bool:
+        """Is the bot a member of the channel (decision 25)? Yes is kept 10 minutes, no 60 seconds.
+
+        An error, or a channel Slack will not show, means not served and is not remembered.
+        """
+        if self._served_yes.get(channel_id):
+            return True
+        if self._served_no.get(channel_id):
+            return False
+        try:
+            response = await self._call(
+                "conversations.info", lambda: self._client.conversations_info(channel=channel_id)
+            )
+        except Exception:
+            return False
+        member = bool((response.get("channel") or {}).get("is_member"))
+        (self._served_yes if member else self._served_no).set(channel_id, True)
+        return member
+
+    def note_event_from(self, channel_id: str) -> None:
+        self._served_no.discard(channel_id)
+        self._served_yes.set(channel_id, True)
+
+    def forget(self, channel_id: str) -> None:
+        self._served_yes.discard(channel_id)
+        self._served_no.discard(channel_id)
+
+    async def joined_channels(self) -> list[str]:
+        """Every public and private channel the bot is in, for startup with no channel list."""
+        channels: list[str] = []
+        cursor: str | None = None
+        while True:
+            response = await self._conversations_page(cursor)
+            channels.extend(item["id"] for item in response.get("channels") or [] if "id" in item)
+            cursor = (response.get("response_metadata") or {}).get("next_cursor") or None
+            if cursor is None:
+                return channels
+
+    async def _conversations_page(self, cursor: str | None) -> Any:
+        return await self._call(
+            "users.conversations",
+            lambda: self._client.users_conversations(
+                types="public_channel,private_channel",
+                exclude_archived=True,
+                limit=200,
+                cursor=cursor,
+            ),
+        )
 
     async def channel_members(self, channel_id: str) -> Sequence[str]:
         cached = self._members.get(channel_id)

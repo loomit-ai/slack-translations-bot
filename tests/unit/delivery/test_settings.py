@@ -79,9 +79,26 @@ class TestChannelAllowlist:
         settings = build(CHANNEL_ALLOWLIST="C0123ABCDE, G0123ABCDE,C0123ABCDE")
         assert settings.channel_allowlist == ("C0123ABCDE", "G0123ABCDE")
 
-    @pytest.mark.parametrize("raw", ["", "C0123", "D0123ABCDE", "c0123abcde", "C0123ABCDE,oops"])
+    @pytest.mark.parametrize("raw", ["C0123", "D0123ABCDE", "c0123abcde", "C0123ABCDE,oops"])
     def test_rejects_bad_ids(self, raw: str) -> None:
         assert rejected_keys(CHANNEL_ALLOWLIST=raw) == ["CHANNEL_ALLOWLIST"]
+
+    @pytest.mark.parametrize("env", ["development", "staging"])
+    @pytest.mark.parametrize("raw", [None, ""])
+    def test_an_empty_list_is_refused_where_a_test_build_could_read_a_real_channel(
+        self, env: str, raw: str | None
+    ) -> None:
+        assert rejected_keys(APP_ENV=env, CHANNEL_ALLOWLIST=raw) == ["CHANNEL_ALLOWLIST"]
+
+    @pytest.mark.parametrize("raw", [None, ""])
+    def test_production_may_run_without_a_list_and_then_membership_decides(
+        self, raw: str | None
+    ) -> None:
+        assert build(APP_ENV="production", CHANNEL_ALLOWLIST=raw).channel_allowlist == ()
+
+    def test_production_may_still_narrow_the_bot_to_a_few_channels(self) -> None:
+        settings = build(APP_ENV="production", CHANNEL_ALLOWLIST="C0123ABCDE")
+        assert settings.channel_allowlist == ("C0123ABCDE",)
 
 
 class TestLanguageSeed:

@@ -34,7 +34,7 @@ def test_the_other_outcomes() -> None:
     assert presenter.present(NothingToTranslate()).text == "This message has no text to translate."
     assert presenter.present(MessageUnavailable()).text == "This message is no longer available."
     assert presenter.present(ChannelNotAllowed()).text == (
-        "Translation is available only in approved channels."
+        "X3M Translator is unavailable in this channel."
     )
 
 

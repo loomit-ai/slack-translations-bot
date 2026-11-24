@@ -64,7 +64,7 @@ class Harness:
 
 
 @pytest.fixture(name="h")
-async def harness() -> AsyncIterator[Harness]:
+async def harness(request: pytest.FixtureRequest) -> AsyncIterator[Harness]:
     timeline: list[str] = []
     slack = FakeSlackServer(timeline)
     await slack.start()
@@ -76,7 +76,7 @@ async def harness() -> AsyncIterator[Harness]:
     telemetry = RecordingTelemetry(timeline)
     clock = FakeClock()
     app = create_app(
-        Settings.from_environ(SETTINGS),
+        Settings.from_environ({**SETTINGS, **getattr(request, "param", {})}),
         Overrides(
             classifier=classifier,
             translator=translator,

@@ -29,6 +29,8 @@ settings:
     bot_events:
       - message.channels
       - message.groups
+      - member_joined_channel # CR-11: audit line when the bot is added to a channel
+      - member_left_channel
   interactivity:
     is_enabled: true
   org_deploy_enabled: false
