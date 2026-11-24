@@ -58,12 +58,15 @@ For a hosted model such as OpenRouter write a second file with `https://openrout
 model name and your key. **Remove names and identifiers from a sample before sending it to a hosted
 model** (decision 5); a local model needs no such care.
 
-**One message.** Type it, pass `TEXT=`, or pipe it in. `TARGET` is the language to translate into
-(default `en`), so English to Korean works too.
+**One message.** Pipe it in, or run the command and type it at the prompt. `TARGET` is the language
+to translate into (default `en`), so English to Korean works too. Use single quotes around the
+message: inside double quotes your shell would run backticks and change every `$`. There is no
+`TEXT=` option on purpose, because `make` would do the same.
 
 ```sh
-make translate-one ENV=lab/local.env TEXT="파란 상자는 어디에 있나요?"
-echo "Where is the blue box?" | make translate-one ENV=lab/local.env TARGET=ko
+echo '파란 상자는 어디에 있나요?' | make translate-one ENV=lab/local.env
+echo 'Where is the blue box?' | make translate-one ENV=lab/local.env TARGET=ko
+uv run python scripts/translate_one.py --env lab/local.env --text 'Use `make check` first'
 ```
 
 It prints the model, the endpoint host, the target, the time, the language Lingua detects with its

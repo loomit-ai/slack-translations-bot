@@ -47,13 +47,14 @@ image: ## Build the container image
 fake-translator: ## Run the fake translator endpoint (TS-02) for manual fault tests
 	$(UV) run python -m tests.support.fake_translator
 
-translate-one: ## Try one message with the model in ENV=lab/local.env (TEXT=, TARGET=, DIAGNOSE=1)
-	@test -n "$(ENV)" || { echo "ENV=lab/local.env is required (see README, Try translations outside Slack)"; exit 2; }
-	$(UV) run python scripts/translate_one.py --env "$(ENV)" $(if $(TARGET),--target "$(TARGET)") $(if $(TEXT),--text "$(TEXT)") $(if $(DIAGNOSE),--diagnose)
+translate-one: ## Try one message: echo '...' | make translate-one ENV=lab/local.env (TARGET=, DIAGNOSE=1)
+	$(if $(filter command line,$(origin TEXT)),$(error TEXT= is not supported. make would run backticks in the message and change every dollar sign. Instead, pipe the message in: echo '...' | make translate-one ENV=lab/local.env, or call scripts/translate_one.py with --text))
+	@test -n "$$ENV" || { echo "ENV=lab/local.env is required (see README, Try translations outside Slack)"; exit 2; }
+	$(UV) run python scripts/translate_one.py --env "$$ENV" $${TARGET:+--target "$$TARGET"} $${DIAGNOSE:+--diagnose}
 
 translate-file: ## Try a file of messages: ENV=lab/local.env FILE=lab/sample.txt (TARGET=, OUT=)
-	@test -n "$(ENV)" -a -n "$(FILE)" || { echo "ENV=lab/local.env and FILE=lab/sample.txt are required"; exit 2; }
-	$(UV) run python scripts/translate_file.py --env "$(ENV)" "$(FILE)" $(if $(TARGET),--target "$(TARGET)") $(if $(OUT),--out "$(OUT)")
+	@test -n "$$ENV" -a -n "$$FILE" || { echo "ENV=lab/local.env and FILE=lab/sample.txt are required"; exit 2; }
+	$(UV) run python scripts/translate_file.py --env "$$ENV" "$$FILE" $${TARGET:+--target "$$TARGET"} $${OUT:+--out "$$OUT"}
 
 translation-page: ## Try translations in the browser, on 127.0.0.1 only: ENV=lab/local.env (PORT=8765)
 	@test -n "$(ENV)" || { echo "ENV=lab/local.env is required (see README, Try translations outside Slack)"; exit 2; }

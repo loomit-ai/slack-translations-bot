@@ -47,6 +47,21 @@ async def run_tool(
     return await asyncio.to_thread(run)
 
 
+async def run_make(*args: str, stdin: str | None = None) -> subprocess.CompletedProcess[str]:
+    def run() -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["make", "-C", str(REPO), *args],
+            input=stdin if stdin is not None else "",
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=300,
+            check=False,
+        )
+
+    return await asyncio.to_thread(run)
+
+
 def read_rows(path: Path) -> list[dict[str, str]]:
     with path.open(encoding="utf-8-sig", newline="") as handle:
         return list(csv.DictReader(handle))
@@ -56,6 +71,79 @@ def read_rows(path: Path) -> list[dict[str, str]]:
 async def fake() -> AsyncIterator[FakeTranslatorServer]:
     async with FakeTranslatorServer() as server:
         yield server
+
+
+class TestMakeTargets:
+    """QA T1: make must never evaluate a message, and must never change it."""
+
+    async def test_a_message_piped_into_make_reaches_the_model_exactly_and_nothing_runs(
+        self, fake: FakeTranslatorServer, tmp_path: Path
+    ) -> None:
+        ran_one, ran_two = tmp_path / "ran-one", tmp_path / "ran-two"
+        text = (
+            f"run `touch {ran_one}` now, $(touch {ran_two}), $HOME, ${{HOME}}, "
+            "\"double\" and 'single' quotes, cost $5 and 100%"
+        )
+
+        done = await run_make("translate-one", f"ENV={write_profile(tmp_path, fake)}", stdin=text)
+
+        assert done.returncode == 0, done.stderr
+        assert fake.requests[0].user_text == text
+        assert not ran_one.exists() and not ran_two.exists()
+
+    async def test_the_message_as_a_make_variable_is_refused_and_nothing_runs(
+        self, fake: FakeTranslatorServer, tmp_path: Path
+    ) -> None:
+        ran = tmp_path / "ran"
+
+        done = await run_make(
+            "translate-one", f"ENV={write_profile(tmp_path, fake)}", f"TEXT=hello `touch {ran}`"
+        )
+
+        assert done.returncode != 0
+        assert "TEXT=" in done.stderr and "pipe" in done.stderr
+        assert not ran.exists()
+        assert fake.requests == []
+
+    async def test_target_and_diagnose_reach_the_tool(
+        self, fake: FakeTranslatorServer, tmp_path: Path
+    ) -> None:
+        profile = f"ENV={write_profile(tmp_path, fake)}"
+
+        translated = await run_make("translate-one", profile, "TARGET=ko", stdin="Where is it?")
+        diagnosed = await run_make("translate-one", profile, "DIAGNOSE=1")
+
+        assert translated.returncode == 0, translated.stderr
+        assert "Target: ko" in translated.stdout
+        assert diagnosed.returncode == 0, diagnosed.stderr
+        assert "HTTP 200" in diagnosed.stdout
+
+    async def test_paths_with_spaces_and_quotes_work_for_the_file_target(
+        self, fake: FakeTranslatorServer, tmp_path: Path
+    ) -> None:
+        folder = tmp_path / "my profiles"
+        folder.mkdir()
+        sample = folder / "sample 'one'.txt"
+        sample.write_text("first message\nsecond message\n", encoding="utf-8")
+        out = tmp_path / "out dir" / "results.csv"
+
+        done = await run_make(
+            "translate-file",
+            f"ENV={write_profile(folder, fake)}",
+            f"FILE={sample}",
+            f"OUT={out}",
+            "TARGET=en",
+        )
+
+        assert done.returncode == 0, done.stderr
+        assert [r["source"] for r in read_rows(out)] == ["first message", "second message"]
+
+    async def test_missing_settings_are_named_before_anything_runs(self, tmp_path: Path) -> None:
+        one = await run_make("translate-one")
+        both = await run_make("translate-file", "ENV=x.env")
+
+        assert one.returncode == 2 and "ENV=" in one.stderr + one.stdout
+        assert both.returncode == 2 and "FILE=" in both.stderr + both.stdout
 
 
 class TestOneMessage:
