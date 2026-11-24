@@ -95,6 +95,9 @@ MalformedKind = Literal[
     "list_content",
     "truncated",
     "content_filter",
+    "object_finish_reason",
+    "list_finish_reason",
+    "number_finish_reason",
 ]
 
 
@@ -118,7 +121,7 @@ class Drop:
 Behavior = Answer | Fail | Malformed | Hang | Drop
 
 
-def _completion(content: Any, finish_reason: str | None = "stop", usage: bool = True) -> object:
+def _completion(content: Any, finish_reason: Any = "stop", usage: bool = True) -> object:
     body: dict[str, object] = {
         "id": "fake-completion",
         "object": "chat.completion",
@@ -269,6 +272,12 @@ def _malformed(kind: MalformedKind) -> web.StreamResponse:
             return web.json_response(_completion("a translation that stops mid", "length"))
         case "content_filter":
             return web.json_response(_completion("blocked", "content_filter"))
+        case "object_finish_reason":
+            return web.json_response(_completion("a fine translation", {"reason": "stop"}))
+        case "list_finish_reason":
+            return web.json_response(_completion("a fine translation", ["stop"]))
+        case "number_finish_reason":
+            return web.json_response(_completion("a fine translation", 7))
 
 
 def behavior_from_arguments(arguments: argparse.Namespace) -> tuple[list[Behavior], Behavior]:

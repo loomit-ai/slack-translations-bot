@@ -224,6 +224,9 @@ async def test_http_failures_map_to_their_category(
         "list_content",
         "truncated",
         "content_filter",
+        "object_finish_reason",
+        "list_finish_reason",
+        "number_finish_reason",
     ],
 )
 async def test_unusable_answers_are_invalid_responses(

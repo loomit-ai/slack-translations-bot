@@ -114,7 +114,10 @@ def _read_reply(response: httpx.Response) -> _Reply | None:
     choice = _as_object(cast(list[object], choices)[0])
     if choice is None or choice.get("error") is not None:
         return None
-    if choice.get("finish_reason") in _INCOMPLETE_FINISH_REASONS:
+    finish_reason = choice.get("finish_reason")
+    if finish_reason is not None and (
+        not isinstance(finish_reason, str) or finish_reason in _INCOMPLETE_FINISH_REASONS
+    ):
         return None
     message = _as_object(choice.get("message"))
     content = message.get("content") if message is not None else None
@@ -252,7 +255,12 @@ class OpenAITranslator:
             raise ModelError(ModelErrorCategory.UNAVAILABLE, "translate", status, retry_after)
         if 400 <= status < 500:
             raise ModelError(ModelErrorCategory.REJECTED, "translate", status)
-        reply = _read_reply(response) if 200 <= status < 300 else None
+        try:
+            reply = _read_reply(response) if 200 <= status < 300 else None
+        except (TypeError, ValueError, AttributeError, KeyError, IndexError):
+            # Whatever shape the provider sends, an unreadable answer is an invalid response,
+            # so the one retry applies instead of an unexpected exception escaping.
+            reply = None
         if reply is None:
             raise ModelError(ModelErrorCategory.INVALID_RESPONSE, "translate", status)
         return reply

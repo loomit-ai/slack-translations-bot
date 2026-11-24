@@ -371,6 +371,9 @@ async def with_real_adapter(
         Malformed("empty_content"),
         Malformed("no_choices"),
         Malformed("truncated"),
+        Malformed("object_finish_reason"),
+        Malformed("list_finish_reason"),
+        Malformed("number_finish_reason"),
     ],
 )
 async def test_first_failure_then_success_gives_one_result(
@@ -406,7 +409,16 @@ async def test_a_timeout_then_success_gives_one_result(
     assert [r.outcome for r in recorder.records] == ["timeout", "ok"]
 
 
-@pytest.mark.parametrize("fault", [Fail(429), Fail(502), Malformed("not_json")])
+@pytest.mark.parametrize(
+    "fault",
+    [
+        Fail(429),
+        Fail(502),
+        Malformed("not_json"),
+        Malformed("object_finish_reason"),
+        Malformed("list_finish_reason"),
+    ],
+)
 async def test_two_failures_give_one_retry_then_the_error(
     fake: FakeTranslatorServer,
     clock: SteppingClock,
@@ -438,3 +450,19 @@ async def test_a_rejected_request_is_sent_once(
 
     assert raised.value.category is ModelErrorCategory.REJECTED
     assert len(fake.requests) == 1
+
+
+async def test_two_different_malformed_answers_give_one_retry_then_the_error(
+    fake: FakeTranslatorServer, clock: SteppingClock, recorder: RecordingTelemetry, api_key: str
+) -> None:
+    translator, adapter = await with_real_adapter(fake, clock, recorder, api_key)
+    fake.enqueue(Malformed("object_finish_reason"), Malformed("list_finish_reason"), Answer("late"))
+    try:
+        with pytest.raises(ModelError) as raised:
+            await translator.translate(KOREAN, "en")
+    finally:
+        await adapter.aclose()
+
+    assert raised.value.category is ModelErrorCategory.INVALID_RESPONSE
+    assert len(fake.requests) == 2
+    assert [r.outcome for r in recorder.records] == ["invalid_response", "invalid_response"]
