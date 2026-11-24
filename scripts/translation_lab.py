@@ -15,11 +15,11 @@ import subprocess
 import sys
 import time
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Final, cast
+from typing import Final, Protocol, cast
 from urllib.parse import urlsplit
 
 from pydantic import ValidationError
@@ -408,6 +408,54 @@ class Lab:
         if code is not None and (decision.startswith("offer") or "team language" in decision):
             return LanguageCode(code)
         return None
+
+
+class Runner(Protocol):
+    async def run(self, text: str, target: str) -> Outcome: ...
+
+
+async def run_all(
+    runner: Runner,
+    messages: Sequence[str],
+    target: str,
+    on_progress: Callable[[int, int, Outcome], None] | None = None,
+) -> list[Outcome]:
+    """Translate every message once, in order. A failed message is an outcome, not a stop.
+
+    `on_progress(number, total, outcome)` is for a screen or a terminal; it gets the outcome, so
+    the caller decides what to show.
+    """
+    outcomes: list[Outcome] = []
+    for number, message in enumerate(messages, start=1):
+        outcome = await runner.run(message, target)
+        outcomes.append(outcome)
+        if on_progress is not None:
+            on_progress(number, len(messages), outcome)
+    return outcomes
+
+
+@dataclass(frozen=True, slots=True)
+class Summary:
+    total: int
+    translated: int
+    failed: int
+    flagged: int
+    average_seconds: float
+
+    @property
+    def all_failed(self) -> bool:
+        return self.translated == 0
+
+
+def summarize(outcomes: Sequence[Outcome]) -> Summary:
+    worked = [o for o in outcomes if o.worked]
+    return Summary(
+        total=len(outcomes),
+        translated=len(worked),
+        failed=len(outcomes) - len(worked),
+        flagged=sum(1 for o in worked if not o.check.ok),
+        average_seconds=sum(o.seconds for o in outcomes) / len(outcomes) if outcomes else 0.0,
+    )
 
 
 def validate_target(target: str) -> str:

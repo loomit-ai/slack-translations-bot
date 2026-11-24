@@ -26,6 +26,8 @@ from translation_lab import (
     ensure_private_path,
     load_profile,
     read_messages,
+    run_all,
+    summarize,
     use_utf8_output,
     validate_target,
     write_results,
@@ -46,16 +48,20 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def summary(outcomes: list[Outcome], model: str, host: str, path: Path) -> str:
-    worked = [o for o in outcomes if o.worked]
-    failed = len(outcomes) - len(worked)
-    flagged = sum(1 for o in worked if not o.check.ok)
-    average = sum(o.seconds for o in outcomes) / len(outcomes)
+    totals = summarize(outcomes)
     return (
-        f"{len(worked)} of {len(outcomes)} translated · {failed} failed · "
-        f"{flagged} with Slack token flags · average {average:.2f} s · {model} at {host}\n"
+        f"{totals.translated} of {totals.total} translated · {totals.failed} failed · "
+        f"{totals.flagged} with Slack token flags · average {totals.average_seconds:.2f} s · "
+        f"{model} at {host}\n"
         f"Results: {path}\n"
         "Fill the rating column with usable, needs edits or wrong, and use notes for anything else."
     )
+
+
+def show_progress(number: int, total: int, outcome: Outcome) -> None:
+    state = "ok" if outcome.worked else f"failed ({outcome.error})"
+    flag = "" if outcome.check.ok else " · Slack token flag"
+    sys.stderr.write(f"[{number}/{total}] {state} {outcome.seconds:.1f} s{flag}\n")
 
 
 async def run(arguments: argparse.Namespace) -> int:
@@ -67,20 +73,14 @@ async def run(arguments: argparse.Namespace) -> int:
 
     lab = Lab(profile, detect=not arguments.no_detect, hint=arguments.hint)
     await lab.start()
-    outcomes: list[Outcome] = []
     try:
-        for number, message in enumerate(messages, start=1):
-            outcome = await lab.run(message, target)
-            outcomes.append(outcome)
-            state = "ok" if outcome.worked else f"failed ({outcome.error})"
-            flag = "" if outcome.check.ok else " · Slack token flag"
-            sys.stderr.write(f"[{number}/{len(messages)}] {state} {outcome.seconds:.1f} s{flag}\n")
+        outcomes = await run_all(lab, messages, target, show_progress)
     finally:
         await lab.aclose()
 
     write_results(out, outcomes, profile)
     sys.stdout.write(summary(outcomes, profile.model, profile.host, out) + "\n")
-    return 1 if not any(o.worked for o in outcomes) else 0
+    return 1 if summarize(outcomes).all_failed else 0
 
 
 def main(argv: list[str]) -> int:

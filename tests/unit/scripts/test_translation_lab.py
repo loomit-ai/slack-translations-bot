@@ -295,3 +295,61 @@ class TestPrivateFolder:
     def test_a_tracked_place_in_the_repository_is_refused(self) -> None:
         with pytest.raises(lab.ProfileError, match="not ignored by git"):
             lab.ensure_private_path(REPO / "docs" / "results.csv")
+
+
+class TestRunAll:
+    class StubRunner:
+        def __init__(self, failing: set[str]) -> None:
+            self.failing = failing
+            self.seen: list[tuple[str, str]] = []
+
+        async def run(self, text: str, target: str) -> object:
+            self.seen.append((text, target))
+            worked = text not in self.failing
+            check = (
+                lab.TokenCheck(missing=("<@U1>",), added=())
+                if text == "flagged"
+                else lab.TokenCheck((), ())
+            )
+            return lab.Outcome(
+                source=text,
+                translation=f"t:{text}" if worked else "",
+                target=target,
+                seconds=2.0 if worked else 1.0,
+                worked=worked,
+                error="" if worked else "timeout",
+                check=check,
+            )
+
+    async def test_every_message_is_run_in_order_and_progress_is_reported_without_text(
+        self,
+    ) -> None:
+        runner = self.StubRunner(failing={"b"})
+        progress: list[tuple[int, int, bool]] = []
+
+        outcomes = await lab.run_all(
+            runner,
+            ["a", "b", "c"],
+            "ko",
+            lambda number, total, outcome: progress.append((number, total, outcome.worked)),
+        )
+
+        assert runner.seen == [("a", "ko"), ("b", "ko"), ("c", "ko")]
+        assert [o.worked for o in outcomes] == [True, False, True]
+        assert progress == [(1, 3, True), (2, 3, False), (3, 3, True)]
+
+    async def test_it_works_without_a_progress_callback(self) -> None:
+        outcomes = await lab.run_all(self.StubRunner(set()), ["a"], "en")
+
+        assert len(outcomes) == 1
+
+    async def test_the_summary_counts_what_worked_failed_and_was_flagged(self) -> None:
+        runner = self.StubRunner(failing={"b"})
+        outcomes = await lab.run_all(runner, ["a", "b", "flagged"], "en")
+
+        summary = lab.summarize(outcomes)
+
+        assert (summary.total, summary.translated, summary.failed, summary.flagged) == (3, 2, 1, 1)
+        assert summary.average_seconds == pytest.approx(5.0 / 3)
+        assert summary.all_failed is False
+        assert lab.summarize(await lab.run_all(self.StubRunner({"a"}), ["a"], "en")).all_failed
