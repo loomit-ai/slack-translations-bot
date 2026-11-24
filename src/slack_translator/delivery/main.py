@@ -1,19 +1,29 @@
 """Process entry point. The only module that reads the process environment (CFG)."""
 
+import asyncio
 import os
 import sys
 
 from pydantic import ValidationError
 
+from slack_translator.delivery.adapters import AdaptersNotAvailable
+from slack_translator.delivery.app import Overrides, create_app
 from slack_translator.delivery.settings import Settings, invalid_keys
+
+__all__ = ["Overrides", "create_app", "main"]
 
 
 def main() -> None:
     try:
-        Settings.from_environ(os.environ)
+        settings = Settings.from_environ(os.environ)
     except ValidationError as error:
         sys.stderr.write(f"config_invalid: {', '.join(invalid_keys(error))}\n")
         raise SystemExit(1) from None
 
-    sys.stderr.write("settings are valid; the Slack wiring is not built yet (milestone 0.1)\n")
-    raise SystemExit(2)
+    try:
+        application = create_app(settings)
+    except AdaptersNotAvailable as error:
+        sys.stderr.write(f"the {error} adapter is not built yet\n")
+        raise SystemExit(2) from None
+
+    asyncio.run(application.run())

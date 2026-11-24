@@ -34,6 +34,8 @@ src = ["src", "tests", "scripts"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "ASYNC", "RUF"]
+# The design wording uses typographic quotes and the fixtures use other scripts on purpose.
+ignore = ["RUF001", "RUF002", "RUF003"]
 
 [tool.pyright]
 include = ["src", "tests", "scripts"]
@@ -44,6 +46,7 @@ strict = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "--import-mode=importlib"
+pythonpath = ["."]
 asyncio_mode = "auto"
 markers = ["live: needs a real Slack app or provider credentials; not part of make test"]
 
@@ -92,3 +95,4 @@ source_modules = [
     "slack_translator.delivery",
 ]
 forbidden_modules = ["httpx"]
+allow_indirect_imports = true

@@ -1,0 +1,217 @@
+# pyright: basic
+"""ADR-002, ADR-003 · `create_app(settings)` builds everything; nothing happens at import time.
+
+Start order (REQ-11): settings, models, `auth.test`, a membership check of each allowlisted
+channel, then connect. `/readyz` turns ready only after all of it. On SIGTERM the bot stops
+receiving, gives in-flight work 10 seconds, and exits 0.
+"""
+
+import asyncio
+import contextlib
+import signal
+from dataclasses import dataclass
+
+from aiohttp import web
+from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
+from slack_bolt.async_app import AsyncApp
+from slack_bolt.authorization import AuthorizeResult
+from slack_sdk.errors import SlackApiError
+from slack_sdk.web.async_client import AsyncWebClient
+
+from slack_translator.actions.translate_message import (
+    HomeWorkspace,
+    TranslateMessage,
+    TranslationPolicy,
+)
+from slack_translator.delivery import adapters
+from slack_translator.delivery.background import TaskRegistry
+from slack_translator.delivery.http.health import Readiness, build_health_app
+from slack_translator.delivery.listeners import register_all
+from slack_translator.delivery.listeners.context import ListenerContext
+from slack_translator.delivery.settings import Settings
+from slack_translator.delivery.views.presenter import SlackReadPresenter
+from slack_translator.domain.ports import Clock, LanguageClassifier, Telemetry, Translator
+from slack_translator.infrastructure.slack_gateway import SlackGateway
+from slack_translator.infrastructure.system_clock import SystemClock
+
+SLACK_API = "https://slack.com/api/"
+SHUTDOWN_GRACE = 10.0
+
+
+@dataclass(frozen=True, slots=True)
+class Overrides:
+    """Replace adapters, for tests (TS-04) and for pointing at a fake Slack API."""
+
+    classifier: LanguageClassifier | None = None
+    translator: Translator | None = None
+    telemetry: Telemetry | None = None
+    clock: Clock | None = None
+    slack_api_base_url: str = SLACK_API
+
+
+class _Authorization:
+    """What Bolt needs to authorize a request, known after `auth.test` at startup.
+
+    Handing it over keeps Bolt from calling Slack before the acknowledgement (REQ-01).
+    """
+
+    def __init__(self, bot_token: str) -> None:
+        self._bot_token = bot_token
+        self.result: AuthorizeResult | None = None
+
+    def set(self, team_id: str, bot_id: str | None, bot_user_id: str | None) -> None:
+        self.result = AuthorizeResult(
+            enterprise_id=None,
+            team_id=team_id,
+            bot_token=self._bot_token,
+            bot_id=bot_id,
+            bot_user_id=bot_user_id,
+        )
+
+
+class Application:
+    def __init__(
+        self,
+        settings: Settings,
+        bolt: AsyncApp,
+        client: AsyncWebClient,
+        gateway: SlackGateway,
+        home: HomeWorkspace,
+        registry: TaskRegistry,
+        readiness: Readiness,
+        telemetry: Telemetry,
+        authorization: _Authorization,
+        listener_names: tuple[str, ...],
+    ) -> None:
+        self.settings = settings
+        self.bolt = bolt
+        self.registry = registry
+        self.readiness = readiness
+        self.listener_names = listener_names
+        self._client = client
+        self._gateway = gateway
+        self._home = home
+        self._telemetry = telemetry
+        self._authorization = authorization
+
+    async def prepare(self) -> None:
+        """`auth.test` and the channel membership checks. Fails if the workspace is unknown."""
+        auth = await self._client.auth_test()
+        self._home.team_id = str(auth["team_id"])
+        self._authorization.set(self._home.team_id, auth.get("bot_id"), auth.get("user_id"))
+        for channel in self.settings.channel_allowlist:
+            if not await self._bot_is_member(channel):
+                self._telemetry.startup_channel_not_member(channel_id=channel)
+        self.readiness.ready = True
+        self._telemetry.startup_ready()
+
+    async def run(self) -> None:
+        await self.prepare()
+        runner = web.AppRunner(build_health_app(self.readiness))
+        await runner.setup()
+        await web.TCPSite(runner, "0.0.0.0", self.settings.port).start()
+        handler = AsyncSocketModeHandler(
+            self.bolt, self.settings.slack_app_token.get_secret_value()
+        )
+        await handler.connect_async()
+
+        stop = asyncio.Event()
+        loop = asyncio.get_running_loop()
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            loop.add_signal_handler(sig, stop.set)
+        await stop.wait()
+
+        self.readiness.ready = False
+        await handler.close_async()
+        await self.registry.drain(within=SHUTDOWN_GRACE)
+        await runner.cleanup()
+        await self.close()
+        self._telemetry.shutdown()
+
+    async def close(self) -> None:
+        with contextlib.suppress(Exception):
+            await self._gateway.aclose()
+
+    async def _bot_is_member(self, channel: str) -> bool:
+        try:
+            info = await self._client.conversations_info(channel=channel)
+        except SlackApiError:
+            return False
+        return bool((info.get("channel") or {}).get("is_member"))
+
+
+def create_app(settings: Settings, overrides: Overrides | None = None) -> Application:
+    overrides = overrides or Overrides()
+    clock = overrides.clock or SystemClock()
+    telemetry = overrides.telemetry or adapters.build_telemetry(settings)
+    classifier = overrides.classifier or adapters.build_classifier(settings, telemetry, clock)
+    translator = overrides.translator or adapters.build_translator(settings, telemetry, clock)
+
+    client = AsyncWebClient(
+        token=settings.slack_bot_token.get_secret_value(),
+        base_url=overrides.slack_api_base_url,
+        timeout=5,
+    )
+    gateway = SlackGateway(client, telemetry, clock)
+
+    home = HomeWorkspace()
+    policy = TranslationPolicy(
+        allowlist=settings.channel_allowlist,
+        languages=settings.language_seed,
+        read_language=settings.read_language,
+        min_confidence=settings.classifier_min_confidence,
+        classifier_timeout=settings.classifier_timeout,
+        translator_timeout=settings.translator_timeout,
+    )
+    translate_message = TranslateMessage(
+        policy=policy,
+        home=home,
+        classifier=classifier,
+        translator=translator,
+        responder=gateway,
+        reader=gateway,
+        directory=gateway,
+        presenter=SlackReadPresenter(policy.read_language_name),
+        telemetry=telemetry,
+    )
+
+    registry = TaskRegistry()
+    authorization = _Authorization(settings.slack_bot_token.get_secret_value())
+
+    async def authorize() -> AuthorizeResult:
+        if authorization.result is None:
+            raise RuntimeError("the bot has not finished starting")
+        return authorization.result
+
+    bolt = AsyncApp(
+        client=client,
+        authorize=authorize,
+        process_before_response=False,
+        request_verification_enabled=False,
+    )
+
+    @bolt.error
+    async def on_error(error: Exception) -> None:
+        telemetry.internal_error(exception_type=type(error).__name__, correlation_id=None)
+
+    listener_names = register_all(
+        bolt,
+        ListenerContext(
+            translate_message=translate_message,
+            registry=registry,
+            telemetry=telemetry,
+            clock=clock,
+        ),
+    )
+    return Application(
+        settings,
+        bolt,
+        client,
+        gateway,
+        home,
+        registry,
+        Readiness(),
+        telemetry,
+        authorization,
+        listener_names,
+    )

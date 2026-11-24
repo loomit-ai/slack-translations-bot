@@ -6,6 +6,7 @@ that the Design spec names (ADR-003).
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from typing import Any
 
 from slack_translator.domain.languages import LanguageCode
 
@@ -56,7 +57,12 @@ class PrivateMessage:
     """What the bot shows one member. Always has a fallback text and blocks (Design UI-18)."""
 
     text: str
-    blocks: Sequence[Mapping[str, object]]
+    blocks: Sequence[Mapping[str, Any]]
+
+
+@dataclass(frozen=True, slots=True)
+class Translating:
+    """UI-03: shown only where the bot can replace its own note."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,7 +104,8 @@ class ChannelNotAllowed:
 
 
 ReadOutcome = (
-    Translated
+    Translating
+    | Translated
     | AlreadyInReadLanguage
     | NothingToTranslate
     | MessageUnavailable

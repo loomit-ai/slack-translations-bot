@@ -83,3 +83,18 @@ class ModelCallRecord:
     input_chars: int
     prompt_tokens: int | None
     completion_tokens: int | None
+
+
+class ResponseUrlUnusable(Exception):
+    """A Slack response URL cannot be used: its uses or lifetime ran out, or Slack refused it.
+
+    The caller falls back to `PrivateResponder.ephemeral` (Design UI-17, failure row F19).
+    """
+
+
+class SlackDeliveryError(Exception):
+    """Slack did not accept a private message (ERR-07). The message never contains the payload."""
+
+    def __init__(self, slack_error: str | None = None) -> None:
+        super().__init__("Slack did not accept the private message")
+        self.slack_error = slack_error
