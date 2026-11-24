@@ -211,6 +211,33 @@ class TestRuntimeSettings:
         assert rejected_keys(PORT=raw) == ["PORT"]
 
 
+class TestMemberEmailDomains:
+    def test_the_default_is_the_two_x3m_domains(self) -> None:
+        assert build().member_email_domains == frozenset({"x3mads.com", "loomit.ai"})
+
+    def test_values_are_trimmed_lower_cased_and_deduplicated(self) -> None:
+        settings = build(MEMBER_EMAIL_DOMAINS=" X3MADS.com, loomit.AI ,x3mads.com,partner.example")
+        assert settings.member_email_domains == frozenset(
+            {"x3mads.com", "loomit.ai", "partner.example"}
+        )
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            "x3mads",
+            "@x3mads.com",
+            "ana@x3mads.com",
+            "x3mads..com",
+            "-x3mads.com",
+            "x3mads.com/path",
+            "x3mads.com,",
+            "x3mads.com loomit.ai",
+        ],
+    )
+    def test_rejects_anything_that_is_not_a_plain_domain(self, raw: str) -> None:
+        assert rejected_keys(MEMBER_EMAIL_DOMAINS=raw) == ["MEMBER_EMAIL_DOMAINS"]
+
+
 def test_reserved_and_unknown_keys_are_ignored() -> None:
     settings = build(TOKENS_URI="s3://bucket/tokens.json", SOMETHING_ELSE="x")
     assert settings.port == 8000

@@ -23,6 +23,7 @@ oauth_config:
       - channels:read # startup membership check; member list in 0.2
       - groups:read
       - users:read # home-workspace check; recipients in 0.2
+      - users:read.email # decision 23: the email domain decides who is a member
 settings:
   # [0.2] message events; not subscribed in 0.1
   # event_subscriptions:

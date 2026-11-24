@@ -25,6 +25,8 @@ DEFAULT_LANGUAGE_SEED = "en:team,es:team,ru:customer,ko:customer,vi:customer,zh:
 
 _CHANNEL_ID = re.compile(r"^[CG][A-Z0-9]{8,}$")
 _LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1"})
+_PLAIN_DOMAIN = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$")
+DEFAULT_MEMBER_EMAIL_DOMAINS = frozenset({"x3mads.com", "loomit.ai"})
 
 
 class Settings(BaseSettings):
@@ -68,6 +70,8 @@ class Settings(BaseSettings):
     port: Annotated[int, Field(ge=1024, le=65535)] = 8000
     # CFG-16
     translator_extra_body: Annotated[dict[str, Any], NoDecode] = Field(default_factory=dict)
+    # CFG-17
+    member_email_domains: Annotated[frozenset[str], NoDecode] = DEFAULT_MEMBER_EMAIL_DOMAINS
 
     @classmethod
     def settings_customise_sources(
@@ -127,6 +131,16 @@ class Settings(BaseSettings):
         if value.endswith("/"):
             raise ValueError("must not end with a slash")
         return value
+
+    @field_validator("member_email_domains", mode="before")
+    @classmethod
+    def _parse_member_domains(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return value
+        domains = [part.strip().lower() for part in value.split(",")]
+        if not domains or any(not _PLAIN_DOMAIN.match(domain) for domain in domains):
+            raise ValueError("must list plain domains such as x3mads.com, without @")
+        return frozenset(domains)
 
     @field_validator("translator_extra_body", mode="before")
     @classmethod

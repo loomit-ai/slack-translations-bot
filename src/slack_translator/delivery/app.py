@@ -38,6 +38,7 @@ from slack_translator.infrastructure.system_clock import SystemClock
 from slack_translator.infrastructure.telemetry import LogTelemetry
 
 SLACK_API = "https://slack.com/api/"
+EMAIL_SCOPE = "users:read.email"
 SHUTDOWN_GRACE = 10.0
 
 
@@ -51,6 +52,10 @@ class Overrides:
     clock: Clock | None = None
     log_guard: Callable[[], None] | None = None
     slack_api_base_url: str = SLACK_API
+
+
+class MissingScope(RuntimeError):
+    """The Slack token lacks a scope the bot cannot work without."""
 
 
 @runtime_checkable
@@ -122,11 +127,23 @@ class Application:
         for preload in self._preloads:
             await preload()
         auth = await self._client.auth_test()
+        self._require_email_scope(auth)
         self._home.team_id = str(auth["team_id"])
         self._authorization.set(self._home.team_id, auth.get("bot_id"), auth.get("user_id"))
         for channel in self.settings.channel_allowlist:
             if not await self._bot_is_member(channel):
                 self._telemetry.startup_channel_not_member(channel_id=channel)
+
+    @staticmethod
+    def _require_email_scope(auth: object) -> None:
+        """Without `users:read.email` every lookup lacks the email and every member is refused in
+        silence, so the bot does not start (REQ-11). When Slack does not say which scopes the
+        token has, it starts anyway and the runtime check still fails closed.
+        """
+        headers = getattr(auth, "headers", None) or {}
+        scopes = {key.lower(): value for key, value in headers.items()}.get("x-oauth-scopes")
+        if scopes is not None and EMAIL_SCOPE not in {s.strip() for s in str(scopes).split(",")}:
+            raise MissingScope("the bot token lacks the users:read.email scope")
 
     def mark_ready(self) -> None:
         """Ready means able to receive: only called once the transport is connected (REQ-11)."""
@@ -202,6 +219,7 @@ def create_app(settings: Settings, overrides: Overrides | None = None) -> Applic
         min_confidence=settings.classifier_min_confidence,
         classifier_timeout=settings.classifier_timeout,
         translator_timeout=settings.translator_timeout,
+        member_email_domains=settings.member_email_domains,
     )
     translate_message = TranslateMessage(
         policy=policy,

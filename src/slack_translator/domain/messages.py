@@ -30,8 +30,8 @@ class UserFacts:
     team_id: str | None
     is_bot: bool
     deleted: bool
-    is_restricted: bool
     is_stranger: bool
+    email_domain: str | None
 
 
 @dataclass(frozen=True, slots=True)

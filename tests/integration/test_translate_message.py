@@ -17,6 +17,7 @@ from tests.support.payloads import (
     shortcut_payload,
 )
 
+from slack_translator.delivery.app import MissingScope
 from slack_translator.domain.detection import Detection
 from slack_translator.domain.errors import ModelError, ModelErrorCategory
 from slack_translator.domain.languages import LanguageCode
@@ -499,7 +500,12 @@ class TestRetryNoteTiming:
 
 
 ACTOR = "U0ACTOR"
-HOME_MEMBER = {"team_id": "T0HOME", "is_bot": False, "deleted": False}
+HOME_MEMBER = {
+    "team_id": "T0HOME",
+    "is_bot": False,
+    "deleted": False,
+    "profile": {"email": "m1@x3mads.com"},
+}
 
 
 def click(h: Harness, listener: str, user_team: str | None) -> dict[str, Any]:
@@ -677,3 +683,86 @@ class TestMembershipReview:
         assert error.fields["exception_type"] == "RuntimeError"
         assert [e.fields["reason"] for e in h.telemetry.named("request_refused")] == ["unverified"]
         assert "secret" not in repr(h.telemetry.events)
+
+
+def with_email(address: str | None, **more: Any) -> dict[str, Any]:
+    profile = {} if address is None else {"email": address}
+    return {**HOME_MEMBER, "profile": profile, **more}
+
+
+@pytest.mark.parametrize("listener", ["translate_message", "translate_retry"])
+class TestEmailDomain:
+    """CR-09 part C (decision 23): a member is in the X3M workspace with an X3M email."""
+
+    @pytest.mark.parametrize(
+        "record",
+        [
+            pytest.param(with_email("m1@x3mads.com"), id="x3mads"),
+            pytest.param(with_email("m1@loomit.ai"), id="loomit"),
+            pytest.param(with_email("M1@X3MADS.COM"), id="upper case"),
+            pytest.param(
+                with_email("m1@x3mads.com", is_restricted=True), id="guest with an X3M email"
+            ),
+            pytest.param(
+                with_email("m1@x3mads.com", is_ultra_restricted=True), id="single-channel guest"
+            ),
+        ],
+    )
+    async def test_an_x3m_email_in_the_home_workspace_is_served(
+        self, h: Harness, listener: str, record: dict[str, Any]
+    ) -> None:
+        h.slack.add_message(CHANNEL, TS, KOREAN)
+        h.slack.users[ACTOR] = {"id": ACTOR, **record}
+
+        await h.deliver_and_settle(click(h, listener, "T0HOME"))
+
+        assert len(h.translator.calls) == 1
+        assert h.telemetry.named("request_refused") == []
+
+    @pytest.mark.parametrize(
+        ("record", "reason"),
+        [
+            pytest.param(with_email("ana@gmail.com"), "email_domain", id="personal address"),
+            pytest.param(with_email("a@x3mads.com.example.org"), "email_domain", id="suffix trick"),
+            pytest.param(with_email("a@notx3mads.com"), "email_domain", id="prefix trick"),
+            pytest.param(with_email("a@mail.x3mads.com"), "email_domain", id="subdomain"),
+            pytest.param(
+                with_email("a@gmail.com", is_restricted=True),
+                "email_domain",
+                id="guest, other email",
+            ),
+            pytest.param(with_email(None), "unverified", id="no email returned"),
+            pytest.param(with_email("not-an-address"), "unverified", id="no usable address"),
+            pytest.param(with_email("a@b@x3mads.com"), "unverified", id="two @ signs"),
+        ],
+    )
+    async def test_anyone_else_gets_nothing_and_is_counted_by_reason(
+        self, h: Harness, listener: str, record: dict[str, Any], reason: str
+    ) -> None:
+        h.slack.add_message(CHANNEL, TS, KOREAN)
+        h.slack.users[ACTOR] = {"id": ACTOR, **record}
+
+        response = await h.deliver_and_settle(click(h, listener, "T0HOME"))
+
+        assert response is not None and response.status == 200
+        assert h.classifier.calls == [] and h.translator.calls == []
+        assert h.slack.calls_of_kind("private_write") == []
+        assert h.slack.calls_of("conversations.history") == []
+        assert [e.fields["reason"] for e in h.telemetry.named("request_refused")] == [reason]
+
+
+class TestScopeCheckAtStartup:
+    async def test_the_bot_refuses_to_start_without_the_email_scope(self, h: Harness) -> None:
+        h.slack.scopes = "commands,chat:write,users:read"
+        with pytest.raises(MissingScope):
+            await h.app.prepare()
+
+    async def test_it_starts_when_the_scopes_are_listed(self, h: Harness) -> None:
+        h.slack.scopes = "commands,users:read,users:read.email"
+        await h.app.prepare()
+
+    async def test_it_starts_when_slack_does_not_say_which_scopes_the_token_has(
+        self, h: Harness
+    ) -> None:
+        h.slack.scopes = None
+        await h.app.prepare()

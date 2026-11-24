@@ -175,8 +175,9 @@ class SlackGateway:
             team_id=team_id if isinstance(team_id, str) and team_id.strip() else None,
             is_bot=bool(user.get("is_bot")),
             deleted=bool(user.get("deleted")),
-            is_restricted=bool(user.get("is_restricted") or user.get("is_ultra_restricted")),
             is_stranger=bool(user.get("is_stranger")),
+            # Only the domain is kept. The address goes no further than this line (CR-09).
+            email_domain=email_domain_of((user.get("profile") or {}).get("email")),
         )
         if facts.team_id is not None:
             # An answer without a workspace is incomplete: it must not stick for 10 minutes.
@@ -251,6 +252,22 @@ class SlackGateway:
         if len(self._url_use) > 2000:
             self._url_use.pop(next(iter(self._url_use)))
         self._url_use[key] = (first_seen, uses + 1)
+
+
+def email_domain_of(address: object) -> str | None:
+    """The lower-cased domain of an address with exactly one usable `@`, else `None`.
+
+    It never raises and never echoes its input, so an address cannot end up in an error.
+    """
+    if not isinstance(address, str):
+        return None
+    text = address.strip()
+    if not text or any(char.isspace() for char in text):
+        return None
+    local, separator, domain = text.partition("@")
+    if not separator or not local or not domain or "@" in domain:
+        return None
+    return domain.lower()
 
 
 def _slack_error(error: SlackApiError) -> str:

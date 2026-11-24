@@ -29,6 +29,10 @@ PRIVATE_WRITE_METHODS = frozenset({"chat.postEphemeral", "views.open"})
 RESPONSE_URL = "response_url"
 
 HOME_TEAM = "T0HOME"
+DEFAULT_SCOPES = (
+    "commands,chat:write,channels:history,groups:history,channels:read,groups:read,"
+    "users:read,users:read.email"
+)
 
 
 @dataclass
@@ -55,6 +59,7 @@ class FakeSlackServer:
         self.channels: dict[str, dict[str, Any]] = {}
         self.members: dict[str, list[str]] = {}
         self.team_id = HOME_TEAM
+        self.scopes: str | None = DEFAULT_SCOPES
         self._faults: dict[str, list[_Fault]] = {}
         self._holds: dict[str, asyncio.Event] = {}
         self._server: TestServer | None = None
@@ -90,6 +95,7 @@ class FakeSlackServer:
             "team_id": team_id if team_id is not None else self.team_id,
             "is_bot": False,
             "deleted": False,
+            "profile": {"email": "m1@x3mads.com"},
             **fields,
         }
 
@@ -167,7 +173,10 @@ class FakeSlackServer:
             return web.json_response(
                 fault.body, status=max(fault.status, 200), headers=fault.headers
             )
-        return web.json_response(self._answer(method, payload))
+        headers = {}
+        if method == "auth.test" and self.scopes is not None:
+            headers["x-oauth-scopes"] = self.scopes
+        return web.json_response(self._answer(method, payload), headers=headers)
 
     async def _response_url(self, request: web.Request) -> web.Response:
         payload = await _payload(request)

@@ -71,6 +71,7 @@ class TranslationPolicy:
     min_confidence: float
     classifier_timeout: float
     translator_timeout: float
+    member_email_domains: frozenset[str]
 
     @property
     def read_language_name(self) -> str:
@@ -242,7 +243,7 @@ class TranslateMessage:
         if request.team_id is not None and request.team_id != home:
             return "workspace"
         facts = await self._directory.user_facts(request.user_id)
-        return membership(facts, home)
+        return membership(facts, home, self._policy.member_email_domains)
 
     async def _detect(self, request: TranslateRequest, cleaned: str) -> Detection | None:
         candidates = candidates_of(self._policy.languages)

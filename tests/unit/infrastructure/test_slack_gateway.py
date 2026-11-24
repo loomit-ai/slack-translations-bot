@@ -14,6 +14,7 @@ from slack_translator.infrastructure.slack_gateway import (
     RESPONSE_URL_LIFETIME,
     RESPONSE_URL_MAX_USES,
     SlackGateway,
+    email_domain_of,
 )
 
 MESSAGE = PrivateMessage(text="hello", blocks=[])
@@ -94,3 +95,27 @@ async def test_the_response_url_never_appears_in_telemetry() -> None:
     with pytest.raises(ResponseUrlUnusable):
         await slack.via_response_url(URL, MESSAGE, "new")
     assert URL.reveal() not in repr(telemetry.events)
+
+
+@pytest.mark.parametrize(
+    ("address", "domain"),
+    [
+        ("m1@x3mads.com", "x3mads.com"),
+        ("M1@X3MADS.COM", "x3mads.com"),
+        ("  m1@loomit.ai  ", "loomit.ai"),
+        ("first.last+tag@mail.x3mads.com", "mail.x3mads.com"),
+        ("x3mads.com", None),
+        ("m1@@x3mads.com", None),
+        ("a@b@x3mads.com", None),
+        ("@x3mads.com", None),
+        ("m1@", None),
+        ("", None),
+        ("   ", None),
+        ("m 1@x3mads.com", None),
+        ("m1@x3mads .com", None),
+        (None, None),
+        (42, None),
+    ],
+)
+def test_only_the_domain_is_taken_from_an_address(address: object, domain: str | None) -> None:
+    assert email_domain_of(address) == domain
