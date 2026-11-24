@@ -10,6 +10,7 @@ print no message text except the translation the person asked to see.
 """
 
 import csv
+import io
 import json
 import re
 import subprocess
@@ -70,6 +71,8 @@ RESULT_COLUMNS: Final = (
     "rating",
     "notes",
 )
+
+RATINGS: Final = ("usable", "needs edits", "wrong")
 
 _CODE_BLOCK: Final = re.compile(r"```.*?```", re.DOTALL)
 _INLINE_CODE: Final = re.compile(r"`[^`\n]*`")
@@ -187,21 +190,23 @@ def check_slack_tokens(source: str, translation: str) -> TokenCheck:
 def read_messages(path: Path) -> list[str]:
     """One message per line, or a CSV (a `message`, `text` or `source` column, else the first)."""
     try:
-        if path.suffix.lower() == ".csv":
-            messages = _csv_messages(path)
-        else:
-            lines = path.read_text(encoding="utf-8-sig").splitlines()
-            messages = [line for line in lines if line.strip()]
+        with path.open(encoding="utf-8-sig", newline="") as handle:
+            text = handle.read()
     except FileNotFoundError:
         raise ProfileError(f"sample file not found: {path}") from None
+    return parse_messages(text, is_csv=path.suffix.lower() == ".csv", name=str(path))
+
+
+def parse_messages(text: str, *, is_csv: bool, name: str) -> list[str]:
+    """The messages in the text of a sample file. `name` is only used to word the error."""
+    messages = _csv_messages(text) if is_csv else [m for m in text.splitlines() if m.strip()]
     if not messages:
-        raise ProfileError(f"no messages in {path}")
+        raise ProfileError(f"no messages in {name}")
     return messages
 
 
-def _csv_messages(path: Path) -> list[str]:
-    with path.open(encoding="utf-8-sig", newline="") as handle:
-        rows = list(csv.reader(handle))
+def _csv_messages(text: str) -> list[str]:
+    rows = list(csv.reader(io.StringIO(text, newline="")))
     if not rows:
         return []
     header = [cell.strip().lower() for cell in rows[0]]
@@ -252,11 +257,14 @@ class Outcome:
     decision: str = ""
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
+    rating: str = ""
+    notes: str = ""
 
 
 def write_results(path: Path, outcomes: Sequence[Outcome], profile: Profile) -> None:
-    """One row per message, with empty `rating` and `notes` columns for a person to fill in
-    (usable, needs edits or wrong). UTF-8 with a byte-order mark so a spreadsheet reads Korean."""
+    """One row per message, with `rating` (one of `RATINGS`) and `notes` columns. The terminal
+    tools leave them empty for a person to fill in; the page fills them from the person's marks.
+    UTF-8 with a byte-order mark so a spreadsheet reads Korean."""
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8-sig", newline="") as handle:
         writer = csv.writer(handle)
@@ -279,8 +287,8 @@ def write_results(path: Path, outcomes: Sequence[Outcome], profile: Profile) -> 
                     profile.host,
                     "" if outcome.prompt_tokens is None else outcome.prompt_tokens,
                     "" if outcome.completion_tokens is None else outcome.completion_tokens,
-                    "",
-                    "",
+                    outcome.rating,
+                    outcome.notes,
                 ]
             )
 
