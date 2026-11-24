@@ -2,7 +2,7 @@
 
 Nov 23, 2026 · @Federico A. Ocampo
 
-Revised Nov 24, 2026 with decisions taken by Federico: language detection uses the Lingua library inside the bot instead of a classifier model; the bot is built in Python with Bolt for Python; there is no Copy button; users outside the X3M workspace get no response; a send that times out is never retried automatically. The sequence diagram image has not been redrawn: it still shows a classifier model and a Copy button.
+Revised Nov 24, 2026 with decisions taken by Federico: language detection uses the Lingua library inside the bot instead of a classifier model; the bot is built in Python with Bolt for Python; there is no Copy button; users outside the X3M workspace get no response; a send that times out is never retried automatically. The sequence diagram image has not been redrawn: it still shows a classifier model and a Copy button. Later the same day: only X3M members are served (the X3M workspace itself, Slack email at x3mads.com or loomit.ai); every human message is classified, whoever wrote it; members who read a language still get its offers in the first version.
 
 ## Purpose and scope
 
@@ -10,7 +10,7 @@ The bot lets X3M staff read and answer customers who write in a language other t
 
 The bot does three things:
 
-1. **Detect and offer.** It classifies the language of each message in the configured customer channels. When the language is one of the customer languages an admin has configured, it privately offers a translation to each X3M member of the channel.
+1. **Detect and offer.** It classifies the language of each message in the configured customer channels, whether a customer or an X3M member wrote it. When the language is one of the customer languages an admin has configured, it privately offers a translation to each X3M member of the channel except its author.
 2. **Translate on demand.** When a member clicks the offer, it shows that member an English translation that nobody else sees.
 3. **Reply in the customer's language.** It translates the member's reply, shows a private preview whose translation the member can edit, and after the member clicks Send posts it as that member in the thread of the original message.
 
@@ -22,7 +22,7 @@ Three invariants hold on every path, error paths included:
 - **Nothing is posted in a member's name without their Send click** on the exact text shown in the preview.
 - **Only the classifier runs on every message.** It is a local library, so no message leaves Slack for detection. Translation calls happen only after a member asks.
 
-Out of scope for the first version: files, images and audio; direct messages and channels outside the allowlist; reacting to message edits or deletions; offers for team languages (English and Spanish by default); translating without a click.
+Out of scope for the first version: files, images and audio; direct messages and channels outside the allowlist; reacting to message edits or deletions; offers for team languages (English and Spanish by default); translating without a click. Also later: an "I speak {language}" button that lets a member stop offers for a language they read (planned for 1.1). Until then every X3M member gets the offer.
 
 ## Components and Slack app setup
 
@@ -31,7 +31,7 @@ The bot is one Slack app installed in the X3M workspace, plus a local language c
 | Component | Role in the flow | What the bot needs from it |
 | --- | --- | --- |
 | Customer | External member of a Slack Connect channel | Nothing. Must never receive bot output |
-| X3M user | Internal member of the same channel | A one-time authorization, so replies post under their name |
+| X3M user | X3M member in the same channel: a person of the X3M workspace itself whose Slack email is at an X3M domain | A one-time authorization, so replies post under their name |
 | Slack | Delivers events and interactions, renders messages | Events API, interactivity, Web API |
 | Translator bot | The service to build | One replica: drafts in memory, settings and tokens as JSON objects in S3 |
 | Language classifier | Returns the language of a text | Lingua (`lingua-py`), a library that runs inside the bot. No network call and no vendor |
@@ -52,7 +52,7 @@ Slack app configuration:
 | Setting | Value | Used for |
 | --- | --- | --- |
 | Bot scopes | `channels:history`, `groups:history` | Receiving and fetching messages in public and private channels |
-| Bot scopes | `channels:read`, `groups:read`, `users:read` | Listing channel members, telling internal from external users, checking admin flags |
+| Bot scopes | `channels:read`, `groups:read`, `users:read`, `users:read.email` | Listing channel members, telling X3M members from everyone else (workspace and email domain), checking admin flags |
 | Bot scopes | `chat:write`, `commands` | Ephemeral messages; the slash command and the message shortcut |
 | User scope | `chat:write` | Posting the approved reply as the user |
 | Event subscriptions | `message.channels`, `message.groups` | Step 2 |
@@ -74,6 +74,7 @@ Runtime configuration:
 | `KMS_KEY_ID` | Key that encrypts the tokens object | Required |
 | `LANGUAGE_SEED` | Languages written to `settings.json` when the object does not exist yet. Admins manage them afterwards | `en:team`, `es:team`, `ru:customer`, `ko:customer`, `vi:customer`, `zh:customer` |
 | `APP_ADMINS` | User IDs allowed to change languages, besides workspace owners and admins | Empty |
+| `MEMBER_EMAIL_DOMAINS` | Email domains that make a person of the X3M workspace an X3M member. The whole domain must match | `x3mads.com`, `loomit.ai` |
 | `CONFIG_CACHE_TTL` | How often the bot rereads `settings.json`, to pick up manual edits | 60 s |
 | `READ_LANGUAGE` | Target language of step 9. Always a team language | `en` |
 | `CLASSIFIER_MIN_CONFIDENCE` | Below this value, no offer | 0.8 until the language test on Lingua sets it |
@@ -88,7 +89,7 @@ The home workspace ID is read from `auth.test` at startup. Four rules apply to e
 - **Acknowledge within 3 seconds**, then run model calls and Slack calls asynchronously. Slack shows the user a timeout error otherwise ([interaction handling](https://docs.slack.dev/interactivity/handling-user-interaction)).
 - **Verify the request signature** when the app uses an HTTP endpoint.
 - **Drop duplicates.** Slack retries event deliveries, so key event processing on `event_id`.
-- **Check the boundary.** Ignore any channel outside the allowlist and any acting user whose workspace is not the home workspace. A user from another workspace gets no response at all. An X3M member who acts in a channel outside the allowlist gets a private notice.
+- **Check the boundary.** Ignore any channel outside the allowlist and any acting user who is not an X3M member. An X3M member is an active person of the home workspace itself, not a Slack Connect user from another organisation, whose Slack email domain is one of `MEMBER_EMAIL_DOMAINS`. A guest counts only if their email is at one of those domains. Everyone else, and anyone whose lookup fails or shows no email, gets an acknowledgement to Slack and no response at all; count it. An X3M member who acts in a channel outside the allowlist gets a private notice.
 
 ## Language configuration (Home tab)
 
@@ -181,7 +182,7 @@ Validate the file against a JSON Schema on every read and before every write. If
 
 ## Phase 1: detect and offer (steps 1 to 6)
 
-Every human message in an allowlisted channel is classified, and a result in a configured customer language produces one private offer per X3M member.
+Every human message in an allowlisted channel is classified, and a result in a configured customer language produces one private offer per X3M member except the author, whether a customer or a colleague wrote the message.
 
 1. **Step 1, the customer posts.** Nothing to build. The message can be top-level or a reply inside a thread.
 2. **Step 2, message event.** Slack delivers a [`message` event](https://docs.slack.dev/reference/events/message) through `message.channels` (public) or `message.groups` (private). Continue only when all of these hold:
@@ -192,7 +193,7 @@ Every human message in an allowlisted channel is classified, and a result in a c
 3. **Step 3, detect language.** Call `LanguageClassifier.detect` with the cleaned text and every configured language as `candidates` (see Language configuration). Detection runs inside the bot with Lingua, so the text is not sent anywhere at this step.
 4. **Step 4, decision.** Continue only when the result is a configured customer language with confidence at or above `CLASSIFIER_MIN_CONFIDENCE`. Stop silently for a team language, for `other`, for lower confidence, or when the call fails or times out. This is the "English or Spanish: stop here" note on the diagram; English and Spanish are the default team languages.
 5. **Step 5, private offer.** Build the recipient list, then send one ephemeral message per recipient.
-   - **Recipients:** call `conversations.members` (paginated) and keep the users whose `users.info` shows the home `team_id`. Drop bots, deactivated users and the message author. Cache both lookups for about 10 minutes.
+   - **Recipients:** call `conversations.members` (paginated) and keep the users who are X3M members (see Check the boundary), using `users.info`. Drop bots, deactivated users and the message author. Cache both lookups for about 10 minutes, keeping only the email domain, never the address. Members who read the language still get the offer.
    - **Message:** send with [`chat.postEphemeral`](https://docs.slack.dev/reference/methods/chat.postEphemeral), passing `channel`, `user`, a fallback `text`, and blocks with a line such as "Message in Korean" and a button "Translate this message".
    - **Button:** `action_id` is `translate_offer`. Its `value` is compact JSON with the channel, the message `ts`, the thread root `ts` if any, and the detected language, with its script for Chinese. A button value holds at most 2,000 characters.
    - **Placement:** an ephemeral message is not attached to the original. It appears at the bottom of the channel when sent, so send it promptly. When the original is a thread reply, pass the thread root as `thread_ts`, so the offer shows inside that thread.
@@ -209,7 +210,7 @@ A member asks for a translation, and the bot replaces their offer with English t
 
 7. **Step 7, the member clicks.** Two entry points lead to the same handler: the button on the offer, and the message shortcut on any message.
 8. **Step 8, interaction payload.** Slack sends `block_actions` for the button or `message_action` for the shortcut. Both carry the user, a `trigger_id` and a `response_url`.
-   - Acknowledge, then check that the user belongs to the home workspace.
+   - Acknowledge, then check that the user is an X3M member (see Check the boundary).
    - Get the original text. The shortcut payload already contains the message. For the button, fetch it with `conversations.history` (`latest` and `oldest` set to the message `ts`, `inclusive`, `limit` 1), or with `conversations.replies` when the message is a thread reply.
    - If Slack no longer returns the message, tell the member it is no longer available and stop.
    - Show progress: replace the offer with "Translating…" through the `response_url`.
@@ -295,7 +296,7 @@ The bot keeps two JSON objects in S3, settings and user tokens, and everything e
 | Language settings and change history | `settings.json` in S3 at `SETTINGS_URI` | Until an admin changes it. History keeps the last 50 changes | Written with conditional writes, validated against a JSON Schema, seeded from `LANGUAGE_SEED` |
 | Reply drafts | Bot memory | `DRAFT_TTL`, or until the bot restarts | Includes `version`, `edited` and the latest preview `response_url`. Delete on Send or Cancel |
 | Event dedupe keys | Bot memory | About 10 minutes | Keyed on `event_id` |
-| Membership and user lookups | Bot memory | About 10 minutes | IDs and admin flags only |
+| Membership and user lookups | Bot memory | About 10 minutes | IDs, admin flags and the email domain only. Never the email address |
 | Translation cache (optional) | Bot memory | A few minutes | Leave it out if customer text must not be held at all |
 | Customer message text | Not stored | None | Fetched from Slack at click time |
 
@@ -308,7 +309,7 @@ The bot keeps two JSON objects in S3, settings and user tokens, and everything e
 Security rules:
 
 - **Slack requests:** verify the signing-secret signature and reject stale timestamps on the HTTP endpoint.
-- **Authorization on every interaction:** the acting user must belong to the home workspace, and only a draft's owner may edit, cancel or send it. Only admins may change the language list.
+- **Authorization on every interaction:** the acting user must be an X3M member, and only a draft's owner may edit, cancel or send it. Only admins may change the language list.
 - **OAuth:** sign the `state`, bind it to the member, and check that `authed_user.id` in the `oauth.v2.access` response is that member. The user token is in `authed_user.access_token`.
 - **Secrets:** Slack tokens, the signing secret and model API keys come from the secret store, never from the repository.
 - **Untrusted text:** customer messages and member replies can contain instructions. The translation prompt treats them as data, and model output is only displayed, or posted after a human click.
@@ -316,7 +317,7 @@ Security rules:
 Privacy rules:
 
 - **Data leaving Slack:** language detection is local, so reading a channel sends nothing out. A customer message goes to the translation provider only when a member asks to translate it, and a member's reply when they ask to translate that. Use a provider and route that do not train on inputs, and pin them when routing through OpenRouter.
-- **Logs:** record IDs, language codes, latencies and token counts. Never log message bodies, translations or drafts.
+- **Logs:** record IDs, language codes, latencies and token counts. Never log message bodies, translations or drafts. Never log email addresses or their domains.
 
 Export counters for messages classified, offers sent, translations requested, previews shown and replies sent, plus latency and error rates per model. The funnel from offers to sends shows whether the feature is adopted.
 
@@ -357,7 +358,7 @@ Every failure is reported privately to the member who acted, or not at all. None
 | `not_in_channel`, `is_archived`, `channel_not_found` or a locked thread on send | Private error in plain words, keep the draft |
 | Reply longer than the limit | Inline error in the modal |
 | Bot not a member of an allowlisted channel | No events arrive. Check membership at startup and log a warning |
-| Interaction from a user outside the home workspace | Acknowledge to Slack, show nothing, count it. The customer never sees bot output |
+| Interaction from anyone who is not an X3M member, or whose membership cannot be established | Acknowledge to Slack, show nothing, count it. The customer never sees bot output |
 | X3M member uses the shortcut or `/translate` in a channel outside the allowlist | Private notice. Nothing else happens |
 
 ## Acceptance criteria
@@ -396,9 +397,10 @@ The points below are assumed in this spec and still need a decision from X3M, ex
 | --- | --- | --- |
 | Unsolicited offers | Step 5 sends an ephemeral message that no recipient asked for | Slack's [messaging guide](https://docs.slack.dev/messaging/) says ephemeral messages must follow a user action and never be unsolicited. The method reference lists no technical restriction. Validate in staging and accept the deviation, or fall back to the shortcut alone |
 | Copy button | **Decided Nov 24, 2026:** no Copy button. Members select the text in the message | Nothing left to decide |
-| Users outside the X3M workspace | **Decided Nov 24, 2026:** no response at all. An X3M member outside the allowlist gets a private notice | Nothing left to decide |
+| People who are not X3M members | **Decided Nov 24, 2026:** only people of the X3M workspace itself with a Slack email at x3mads.com or loomit.ai are served. Everyone else gets no response at all. An X3M member outside the allowlist gets a private notice | Nothing left to decide |
+| Members who read a customer language | **Decided Nov 24, 2026:** they still get offers in the first version. Version 1.1 adds an "I speak {language}" button to stop offers for that language | Nothing left to decide |
 | A send that times out | **Decided Nov 24, 2026:** tell the member it may have been sent, and never retry automatically | Nothing left to decide |
-| Which messages are classified | All human messages, including those from X3M members | Restrict to external authors if offers on colleagues' messages are noise |
+| Which messages are classified | **Decided Nov 24, 2026:** every human message, from customers and X3M members alike. Offers go to each X3M member except the author | Nothing left to decide |
 | Model choices | **Classifier decided Nov 23, 2026:** Lingua (`lingua-py`), inside the bot. Translator: Gemini 3.7 Flash through OpenRouter, proposed | Confirm the translator, and set the Lingua confidence threshold, with a test on real messages. Federico is gathering 20 or more Korean messages written by native speakers |
 | Data leaving Slack | Customer text goes to the translation provider when a member asks. Detection is local | Confirm that customer agreements allow it, and choose a route with no training and low retention |
 | Approving unread text | The member approves, and can now edit, a translation they may not be able to read | Add a back-translation line to the preview, refreshed after each edit, at the cost of one more model call per change |
@@ -408,7 +410,7 @@ The points below are assumed in this spec and still need a decision from X3M, ex
 | Chinese script | Replies follow the customer's script; `/translate` defaults to Simplified | Confirm the default if many customers are in Taiwan or Hong Kong |
 | Scope of the settings panel | Only languages are edited there; channels stay in `CHANNEL_ALLOWLIST` | Whether to move channels and the confidence threshold to the panel later |
 | Storage | Settings and tokens as JSON objects in S3, drafts in memory, one replica | Accept no failover and drafts lost on each deploy, or bring back Redis for drafts if the bot needs more than one replica |
-| Guests | Guest accounts of the X3M workspace count as internal | Exclude them through `is_restricted` if they must not see offers. The same choice applies to the message shortcut |
+| Guests | **Decided Nov 24, 2026:** a guest counts as an X3M member only if their Slack email is at an allowed domain. Any other guest is treated like a customer. Applies to offers and to the message shortcut | Nothing left to decide |
 | Stack and environments | **Decided Nov 23, 2026:** Python with Bolt for Python. JSON objects in S3, one replica. **Decided Nov 24, 2026:** the development and staging apps run in the X3M workspace, in a testing channel, on Socket Mode. Production: HTTP endpoint and per-user authorization rollout | How the customer side is played in the testing channel, which the acceptance criteria need to prove the customer sees nothing |
 
 ## Sources
@@ -430,7 +432,7 @@ Slack developer documentation, opened on 23 November 2026:
 - [views.publish](https://docs.slack.dev/reference/methods/views.publish): no scope required, Tier 4, 250 KB view limit
 - [Select menu element](https://docs.slack.dev/reference/block-kit/block-elements/select-menu-element): 100 options for static menus, Options Load URL for external menus
 - [Plain-text input element](https://docs.slack.dev/reference/block-kit/block-elements/plain-text-input-element): 3,000-character maximum
-- [users.info](https://docs.slack.dev/reference/methods/users.info): admin and owner flags, `users:read`
+- [users.info](https://docs.slack.dev/reference/methods/users.info): admin and owner flags, `users:read`; the profile email needs `users:read.email`
 - [Amazon S3 conditional writes](https://docs.aws.amazon.com/AmazonS3/latest/userguide/conditional-writes.html): `If-Match` with the ETag, `412 Precondition Failed`, `If-None-Match` for creation
 
 Other sources:
