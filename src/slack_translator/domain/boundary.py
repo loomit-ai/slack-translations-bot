@@ -18,7 +18,7 @@ def membership(facts: UserFacts | None, home_team_id: str) -> Literal["member"] 
     counting; the person is shown nothing either way. Guests and email domains join in parts B
     and C, and each refusal reason is declared in `RefusalReason` already.
     """
-    if facts is None or facts.team_id is None:
+    if facts is None or not facts.team_id or not facts.team_id.strip():
         return "unverified"
     if facts.team_id != home_team_id or facts.is_stranger:
         return "workspace"

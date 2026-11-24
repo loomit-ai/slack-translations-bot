@@ -626,11 +626,15 @@ class TestMembership:
 class TestMembershipReview:
     """QA findings on CR-09 part A."""
 
+    @pytest.mark.parametrize("team", [None, "", "   "], ids=["missing", "empty", "blank"])
     async def test_an_incomplete_lookup_is_not_cached_so_the_next_click_asks_again(
-        self, h: Harness, listener: str
+        self, h: Harness, listener: str, team: str | None
     ) -> None:
         h.slack.add_message(CHANNEL, TS, KOREAN)
-        h.slack.users[ACTOR] = {"id": ACTOR, "is_bot": False, "deleted": False}
+        incomplete: dict[str, Any] = {"id": ACTOR, "is_bot": False, "deleted": False}
+        if team is not None:
+            incomplete["team_id"] = team
+        h.slack.users[ACTOR] = incomplete
 
         await h.deliver_and_settle(click(h, listener, "T0HOME"))
         assert h.slack.calls_of_kind("private_write") == []

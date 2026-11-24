@@ -170,8 +170,9 @@ class SlackGateway:
             # and the caller refuses (REQ-05).
             return None
         user = response.get("user") or {}
+        team_id = user.get("team_id")
         facts = UserFacts(
-            team_id=user.get("team_id"),
+            team_id=team_id if isinstance(team_id, str) and team_id.strip() else None,
             is_bot=bool(user.get("is_bot")),
             deleted=bool(user.get("deleted")),
             is_restricted=bool(user.get("is_restricted") or user.get("is_ultra_restricted")),

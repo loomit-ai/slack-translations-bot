@@ -37,6 +37,8 @@ def test_an_active_human_of_the_home_workspace_is_a_member() -> None:
     [
         (None, "unverified"),
         (facts(team_id=None), "unverified"),
+        (facts(team_id=""), "unverified"),
+        (facts(team_id="  "), "unverified"),
         (facts(team_id="T0OTHER"), "workspace"),
         (facts(is_stranger=True), "workspace"),
         (facts(team_id="T0OTHER", is_stranger=True), "workspace"),
