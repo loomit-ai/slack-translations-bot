@@ -113,6 +113,7 @@ class TestAcknowledgement:
             # Bolt acknowledges events itself before it runs their listeners.
             "member_joined_channel",
             "member_left_channel",
+            "message_event",
         }
         assert set(h.app.listener_names) == covered
 

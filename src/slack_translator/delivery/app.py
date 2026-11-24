@@ -20,6 +20,7 @@ from slack_bolt.authorization import AuthorizeResult
 from slack_sdk.errors import SlackApiError
 from slack_sdk.web.async_client import AsyncWebClient
 
+from slack_translator.actions.classify_message import ClassifyMessage, IntakePolicy
 from slack_translator.actions.send_offers import SendOffers
 from slack_translator.actions.translate_message import (
     HomeWorkspace,
@@ -33,6 +34,7 @@ from slack_translator.delivery.listeners import register_all
 from slack_translator.delivery.listeners.context import ListenerContext
 from slack_translator.delivery.settings import Settings
 from slack_translator.delivery.views.presenter import SlackReadPresenter
+from slack_translator.domain.boundary import channel_is_allowed
 from slack_translator.domain.ports import (
     Clock,
     LanguageClassifier,
@@ -41,6 +43,7 @@ from slack_translator.domain.ports import (
     Telemetry,
     Translator,
 )
+from slack_translator.infrastructure.dedupe import DuplicateGuard
 from slack_translator.infrastructure.slack_gateway import SlackGateway
 from slack_translator.infrastructure.system_clock import SystemClock
 from slack_translator.infrastructure.telemetry import LogTelemetry
@@ -273,6 +276,28 @@ def create_app(settings: Settings, overrides: Overrides | None = None) -> Applic
         clock=clock,
     )
 
+    def accept_channel(channel: str) -> bool:
+        """Intake's first filter (CR-11): an event proves the bot is in the channel. With a list,
+        only its channels are read."""
+        if not channel_is_allowed(channel, settings.channel_allowlist):
+            return False
+        gateway.note_event_from(channel)
+        return True
+
+    classify_message = ClassifyMessage(
+        policy=IntakePolicy(
+            languages=settings.language_seed,
+            min_confidence=settings.classifier_min_confidence,
+            classifier_timeout=settings.classifier_timeout,
+        ),
+        classifier=classifier,
+        telemetry=telemetry,
+        seen=DuplicateGuard(clock),
+        offers=send_offers,
+        clock=clock,
+        is_served=accept_channel,
+    )
+
     registry = TaskRegistry()
     authorization = _Authorization(settings.slack_bot_token.get_secret_value())
 
@@ -296,6 +321,7 @@ def create_app(settings: Settings, overrides: Overrides | None = None) -> Applic
         bolt,
         ListenerContext(
             translate_message=translate_message,
+            classify_message=classify_message,
             offers=send_offers,
             served=gateway,
             home=home,
