@@ -77,9 +77,26 @@ async def test_configured_languages_are_recognised(
     assert 0.7 <= result.confidence <= 1.0
 
 
-async def test_chinese_does_not_name_a_script(classifier: LinguaClassifier) -> None:
-    assert (await classifier.detect(Z1, SEED)).script is None
-    assert (await classifier.detect(Z2, SEED)).script is None
+async def test_chinese_names_its_script_from_the_characters(classifier: LinguaClassifier) -> None:
+    assert (await classifier.detect(Z1, SEED)).script == "Hans"
+    assert (await classifier.detect(Z2, SEED)).script == "Hant"
+
+
+async def test_chinese_whose_characters_do_not_decide_has_no_script(
+    classifier: LinguaClassifier,
+) -> None:
+    result = await classifier.detect("我你他是", SEED)
+
+    assert result.language == "zh"
+    assert result.script is None
+
+
+async def test_japanese_has_no_script_even_when_it_is_configured(
+    classifier: LinguaClassifier,
+) -> None:
+    result = await classifier.detect(J1, [*SEED, candidate("ja", "Japanese")])
+
+    assert (result.language, result.script) == ("ja", None)
 
 
 async def test_a_language_outside_the_candidates_is_other_with_the_same_lead(
@@ -253,6 +270,27 @@ async def test_values_that_are_not_scores_abstain_instead_of_raising(
         await adapter.aclose()
 
     assert [r.outcome for r in recorder.records] == ["ok"]
+
+
+@pytest.mark.parametrize(
+    ("text", "language", "expected"),
+    [
+        (Z1, "zh", Detection(LanguageCode("zh"), 1.0, "Hans")),
+        (Z2, "zh", Detection(LanguageCode("zh"), 1.0, "Hant")),
+        ("我你他是", "zh", Detection(LanguageCode("zh"), 1.0, None)),
+        (K1, "zh", Detection(LanguageCode("zh"), 1.0, None)),
+        (Z1, "ko", Detection(LanguageCode("ko"), 1.0, None)),
+        (Z1, "fr", Detection("other", 1.0, None)),
+    ],
+)
+async def test_only_a_chinese_result_carries_a_script(
+    recorder: RecordingTelemetry, text: str, language: str, expected: Detection
+) -> None:
+    adapter = with_scorer(recorder, scores((language, 0.9)))
+    try:
+        assert await adapter.detect(text, SEED) == expected
+    finally:
+        await adapter.aclose()
 
 
 async def test_a_low_raw_score_with_a_clear_lead_still_names_the_language(

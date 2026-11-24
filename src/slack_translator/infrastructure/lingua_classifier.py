@@ -4,7 +4,8 @@ The only module that imports `lingua`. The decision set is every language Lingua
 language outside `candidates` can come back as `other` instead of being forced into a candidate.
 Nothing loads at import. Detection runs in worker threads, at most `max_in_flight` at once, under
 a deadline of `CLASSIFIER_TIMEOUT`. Text is never stored or logged. `confidence` is the lead of the
-top language over the runner-up (decision 4, CR-10), not Lingua's raw top value.
+top language over the runner-up (decision 4, CR-10), not Lingua's raw top value. `script` is set
+for Chinese from the characters (ADR-005).
 """
 
 import asyncio
@@ -12,11 +13,13 @@ import importlib.metadata
 import threading
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from math import isfinite
 from typing import Final, cast
 
 from lingua import LanguageDetector, LanguageDetectorBuilder
 
+from slack_translator.domain.chinese_script import script_of
 from slack_translator.domain.detection import Detection
 from slack_translator.domain.errors import ModelCallRecord, ModelError, ModelErrorCategory
 from slack_translator.domain.languages import LanguageCandidate, LanguageCode
@@ -107,7 +110,7 @@ class LinguaClassifier:
         )
         if failure is not None:
             raise ModelError(failure, "detect")
-        return _to_detection(ranked, candidates)
+        return _with_script(_to_detection(ranked, candidates), text)
 
     def _rank(self, text: str) -> Sequence[tuple[str, float]]:
         if self._scorer is not None:
@@ -134,6 +137,13 @@ class LinguaClassifier:
         detector = self._load()
         for text in _WARM_UP_TEXTS:
             detector.compute_language_confidence_values(text)
+
+
+def _with_script(detection: Detection, text: str) -> Detection:
+    """ADR-005: Lingua has one Chinese entry, so the script comes from the characters."""
+    if detection.language != "zh":
+        return detection
+    return replace(detection, script=script_of(text))
 
 
 def _entry(item: object) -> tuple[str, float] | None:
