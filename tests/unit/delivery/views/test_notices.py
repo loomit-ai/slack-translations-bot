@@ -4,6 +4,7 @@ import pytest
 
 from slack_translator.delivery.views.notices import (
     already_read_message,
+    error_notice_message,
     no_text_message,
     not_allowed_message,
     progress_message,
@@ -15,6 +16,7 @@ from slack_translator.delivery.views.notices import (
     ("message", "sentence"),
     [
         (progress_message(), "Translating…"),
+        (error_notice_message(), "An error has occurred…"),
         (already_read_message("English"), "This message is already in English."),
         (unavailable_message(), "This message is no longer available."),
         (not_allowed_message(), "Translation is available only in approved channels."),

@@ -5,6 +5,7 @@ output (ADR-006); a customer sees nothing on any path, errors included.
 """
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Literal
 
@@ -25,6 +26,7 @@ from slack_translator.domain.languages import ConfiguredLanguage, LanguageCode, 
 from slack_translator.domain.messages import (
     AlreadyInReadLanguage,
     ChannelNotAllowed,
+    ErrorNotice,
     MessageRef,
     MessageUnavailable,
     NothingToTranslate,
@@ -129,6 +131,19 @@ class TranslateMessage:
                 exception_type=type(error).__name__, correlation_id=request.correlation_id
             )
             await self._finish(request, self._failure(request), "failed", None, None)
+
+    def retry_notice(self, request: TranslateRequest) -> Callable[[ModelError], Awaitable[None]]:
+        """What to show while the translator retries after a failed first attempt.
+
+        Only where the bot can replace its own note, which is the Retry path. On the shortcut path
+        no progress note exists, so there is nothing to update and nothing is shown.
+        """
+
+        async def notice(_: ModelError) -> None:
+            if request.entry == "retry":
+                await self._deliver(request, ErrorNotice(), quiet=True)
+
+        return notice
 
     async def _run(self, request: TranslateRequest) -> None:
         if not await self._actor_is_internal(request):

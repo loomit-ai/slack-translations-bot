@@ -1,14 +1,16 @@
 """Where `create_app` gets the classifier, translator and telemetry when nothing is injected.
 
-The telemetry adapter is not built yet: its builder raises `AdaptersNotAvailable` until it lands.
-Tests inject fakes through `Overrides` instead.
+Tests inject fakes through `Overrides` instead. `AdaptersNotAvailable` is for an adapter that is
+not built yet; every adapter exists now.
 """
 
+from slack_translator import __version__
 from slack_translator.delivery.settings import Settings
 from slack_translator.domain.ports import Clock, LanguageClassifier, Telemetry, Translator
 from slack_translator.infrastructure.lingua_classifier import LinguaClassifier
 from slack_translator.infrastructure.openai_translator import OpenAITranslator
 from slack_translator.infrastructure.retrying_translator import RetryingTranslator
+from slack_translator.infrastructure.telemetry import LogTelemetry
 
 
 class AdaptersNotAvailable(RuntimeError):
@@ -16,7 +18,7 @@ class AdaptersNotAvailable(RuntimeError):
 
 
 def build_telemetry(settings: Settings) -> Telemetry:
-    raise AdaptersNotAvailable("telemetry")
+    return LogTelemetry(app_env=settings.app_env, version=__version__, log_level=settings.log_level)
 
 
 def build_classifier(settings: Settings, telemetry: Telemetry, clock: Clock) -> LanguageClassifier:

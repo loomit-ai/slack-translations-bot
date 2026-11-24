@@ -2,6 +2,7 @@
 
 from slack_translator.delivery.views.notices import (
     already_read_message,
+    error_notice_message,
     no_text_message,
     not_allowed_message,
     progress_message,
@@ -12,6 +13,7 @@ from slack_translator.delivery.views.ui_08_failed import failed_message
 from slack_translator.domain.messages import (
     AlreadyInReadLanguage,
     ChannelNotAllowed,
+    ErrorNotice,
     MessageUnavailable,
     NothingToTranslate,
     PrivateMessage,
@@ -30,6 +32,8 @@ class SlackReadPresenter:
         match outcome:
             case Translating():
                 return progress_message()
+            case ErrorNotice():
+                return error_notice_message()
             case Translated(text=text, source_language=source):
                 heading = f"{self._read_language} translation"
                 if source is not None:

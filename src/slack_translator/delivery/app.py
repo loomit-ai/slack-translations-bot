@@ -127,8 +127,12 @@ class Application:
         self._telemetry.startup_ready()
 
     async def run(self) -> None:
+        guard_loggers = getattr(self._telemetry, "guard_third_party_loggers", None)
+        if callable(guard_loggers):
+            guard_loggers()
         await self.prepare()
-        runner = web.AppRunner(build_health_app(self.readiness))
+        registry = getattr(self._telemetry, "registry", None)
+        runner = web.AppRunner(build_health_app(self.readiness, registry))
         await runner.setup()
         await web.TCPSite(runner, "0.0.0.0", self.settings.port).start()
         handler = AsyncSocketModeHandler(

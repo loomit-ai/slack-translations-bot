@@ -66,6 +66,11 @@ class Translating:
 
 
 @dataclass(frozen=True, slots=True)
+class ErrorNotice:
+    """Shown in place of the progress note while the bot retries after a failed first attempt."""
+
+
+@dataclass(frozen=True, slots=True)
 class Translated:
     """UI-04 or UI-05: the private translation, naming the source language when it is known."""
 
@@ -105,6 +110,7 @@ class ChannelNotAllowed:
 
 ReadOutcome = (
     Translating
+    | ErrorNotice
     | Translated
     | AlreadyInReadLanguage
     | NothingToTranslate

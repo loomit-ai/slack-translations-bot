@@ -14,6 +14,10 @@ def progress_message() -> PrivateMessage:
     return _notice("Translating…")
 
 
+def error_notice_message() -> PrivateMessage:
+    return _notice("An error has occurred…")
+
+
 def already_read_message(reading_language: str) -> PrivateMessage:
     return _notice(f"This message is already in {reading_language}.")
 

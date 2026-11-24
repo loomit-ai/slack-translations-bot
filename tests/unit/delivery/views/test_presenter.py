@@ -4,6 +4,7 @@ from slack_translator.delivery.views.presenter import SlackReadPresenter
 from slack_translator.domain.messages import (
     AlreadyInReadLanguage,
     ChannelNotAllowed,
+    ErrorNotice,
     MessageUnavailable,
     NothingToTranslate,
     Translated,
@@ -26,6 +27,7 @@ def test_a_translation_without_a_known_source_names_none() -> None:
 
 def test_the_other_outcomes() -> None:
     assert presenter.present(Translating()).text == "Translating…"
+    assert presenter.present(ErrorNotice()).text == "An error has occurred…"
     assert presenter.present(AlreadyInReadLanguage("English")).text == (
         "This message is already in English."
     )

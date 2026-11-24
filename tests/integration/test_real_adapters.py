@@ -19,7 +19,7 @@ from tests.support.fake_translator import (
     FakeTranslatorServer,
     obey_injected_instructions,
 )
-from tests.support.payloads import CHANNEL, MEMBER, shortcut_payload
+from tests.support.payloads import CHANNEL, MEMBER, TS, retry_payload, shortcut_payload
 
 from slack_translator.delivery.app import Application, Overrides, create_app
 from slack_translator.delivery.settings import Settings
@@ -38,6 +38,12 @@ class RealHarness:
 
     async def shortcut(self, text: str) -> list[dict[str, Any]]:
         payload = shortcut_payload(text=text, response_url=self.slack.response_url())
+        await self.app.bolt.async_dispatch(AsyncBoltRequest(body=payload, mode="socket_mode"))
+        await self.app.registry.drain()
+        return [call.payload for call in self.slack.calls_of(RESPONSE_URL)]
+
+    async def retry(self) -> list[dict[str, Any]]:
+        payload = retry_payload(response_url=self.slack.response_url())
         await self.app.bolt.async_dispatch(AsyncBoltRequest(body=payload, mode="socket_mode"))
         await self.app.registry.drain()
         return [call.payload for call in self.slack.calls_of(RESPONSE_URL)]
@@ -130,3 +136,30 @@ async def test_a_translator_that_obeys_the_text_cannot_plant_a_mention_or_link(
     assert "<!channel>" not in shown
     assert "<https://injected.example" not in shown
     assert "&lt;!channel&gt;" in shown
+
+
+async def test_the_retry_path_shows_the_error_note_while_the_translator_retries(
+    real: RealHarness,
+) -> None:
+    real.slack.add_message(CHANNEL, TS, KOREAN)
+    real.translator.enqueue(Fail(503), Answer(text="Three paper stars."))
+
+    posts = await real.retry()
+
+    assert [post["text"] for post in posts] == [
+        "Translating…",
+        "An error has occurred…",
+        "English translation from Korean\nThree paper stars.",
+    ]
+    assert all(post["replace_original"] is True for post in posts)
+    real.slack.assert_no_public_writes()
+
+
+async def test_the_menu_path_shows_no_note_while_the_translator_retries(
+    real: RealHarness,
+) -> None:
+    real.translator.enqueue(Fail(503), Answer(text="Three paper stars."))
+    posts = await real.shortcut(KOREAN)
+    assert [post["text"] for post in posts] == [
+        "English translation from Korean\nThree paper stars."
+    ]

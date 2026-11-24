@@ -26,4 +26,8 @@ def main() -> None:
         sys.stderr.write(f"the {error} adapter is not built yet\n")
         raise SystemExit(2) from None
 
-    asyncio.run(application.run())
+    try:
+        asyncio.run(application.run())
+    except Exception as error:
+        sys.stderr.write(f"startup_failed: {type(error).__name__}\n")
+        raise SystemExit(1) from None
