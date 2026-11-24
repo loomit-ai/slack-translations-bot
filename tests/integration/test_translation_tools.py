@@ -188,6 +188,63 @@ class TestOneMessage:
         assert fake.requests == []
 
 
+class TestDiagnose:
+    """`--diagnose` sends one fixed made-up request and shows what the provider itself says."""
+
+    async def test_it_shows_the_status_and_the_providers_own_error_message(
+        self, fake: FakeTranslatorServer, tmp_path: Path
+    ) -> None:
+        fake.set_default(Fail(404))
+
+        done = await run_tool(
+            "translate_one.py", "--env", str(write_profile(tmp_path, fake)), "--diagnose",
+        )  # fmt: skip
+
+        assert done.returncode == 1
+        assert "HTTP 404" in done.stdout
+        assert "fake provider error" in done.stdout
+        assert "test-model" in done.stdout and "127.0.0.1" in done.stdout
+
+    async def test_it_sends_only_its_own_fixed_text_never_a_message_of_the_person(
+        self, fake: FakeTranslatorServer, tmp_path: Path
+    ) -> None:
+        done = await run_tool(
+            "translate_one.py", "--env", str(write_profile(tmp_path, fake)), "--diagnose",
+            "--text", "SECRET-MARKER a real customer sentence",
+        )  # fmt: skip
+
+        assert done.returncode == 0, done.stderr
+        [request] = fake.requests
+        assert "SECRET-MARKER" not in request.raw_body.decode()
+        assert "SECRET-MARKER" not in done.stdout + done.stderr
+        assert "HTTP 200" in done.stdout
+
+    async def test_it_sends_the_extra_body_of_the_profile_because_routing_rules_decide_the_answer(
+        self, fake: FakeTranslatorServer, tmp_path: Path
+    ) -> None:
+        profile = write_profile(tmp_path, fake)
+        profile.write_text(
+            profile.read_text()
+            + 'TRANSLATOR_EXTRA_BODY={"provider": {"data_collection": "deny"}}\n'
+        )
+
+        await run_tool("translate_one.py", "--env", str(profile), "--diagnose")
+
+        assert fake.requests[0].body["provider"] == {"data_collection": "deny"}
+        assert fake.requests[0].body["model"] == "test-model"
+
+    async def test_a_server_that_cannot_be_reached_is_reported_not_crashed(
+        self, tmp_path: Path
+    ) -> None:
+        async with FakeTranslatorServer() as gone:
+            profile = write_profile(tmp_path, gone)
+
+        done = await run_tool("translate_one.py", "--env", str(profile), "--diagnose")
+
+        assert done.returncode == 1
+        assert "could not connect" in done.stdout.lower()
+
+
 class TestAFileOfMessages:
     async def test_every_line_is_translated_and_the_results_file_leaves_the_rating_empty(
         self, fake: FakeTranslatorServer, tmp_path: Path

@@ -6,8 +6,10 @@
 The message is the `--text` argument, or standard input, or typed at a prompt. It shows the
 translation, the model, the endpoint host and the time taken, the language Lingua detects and its
 lead, and whether any Slack mention, link, emoji code or code block was lost or changed. One
-attempt, no retry, so what you see is what the model did. Exit code 0 on success, 1 when the
-translation failed, 2 when something you can fix is wrong (env file, target, message).
+attempt, no retry, so what you see is what the model did. `--diagnose` sends one fixed made-up
+request instead and shows the provider's own error message, to find out why a model fails.
+Exit code 0 on success, 1 when the translation failed, 2 when something you can fix is wrong
+(env file, target, message).
 """
 
 import argparse
@@ -18,7 +20,9 @@ from pathlib import Path
 from translation_lab import (
     Lab,
     Outcome,
+    Profile,
     ProfileError,
+    diagnose,
     load_profile,
     use_utf8_output,
     validate_target,
@@ -36,6 +40,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--text", help="the message (default: standard input, or a prompt)")
     parser.add_argument("--hint", default="auto", help="auto (like the bot), none, or a code")
     parser.add_argument("--no-detect", action="store_true", help="skip Lingua")
+    parser.add_argument(
+        "--diagnose",
+        action="store_true",
+        help="send one fixed made-up request and show what the provider itself answers",
+    )
     return parser
 
 
@@ -69,8 +78,19 @@ def render(outcome: Outcome, model: str, host: str, tokens: bool = True) -> str:
     return "\n".join(lines)
 
 
+async def run_diagnosis(profile: Profile) -> int:
+    diagnosis = await diagnose(profile)
+    status = f"HTTP {diagnosis.status}" if diagnosis.status else "no HTTP answer"
+    sys.stdout.write(
+        f"Model: {profile.model} · Endpoint: {profile.host}\n{status}: {diagnosis.message}\n"
+    )
+    return 0 if diagnosis.status is not None and 200 <= diagnosis.status < 300 else 1
+
+
 async def run(arguments: argparse.Namespace) -> int:
     profile = load_profile(arguments.env)
+    if arguments.diagnose:
+        return await run_diagnosis(profile)
     target = validate_target(arguments.target or profile.settings.read_language)
     text = read_text(arguments.text)
     if not text.strip():

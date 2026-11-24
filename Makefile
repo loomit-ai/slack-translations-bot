@@ -47,9 +47,9 @@ image: ## Build the container image
 fake-translator: ## Run the fake translator endpoint (TS-02) for manual fault tests
 	$(UV) run python -m tests.support.fake_translator
 
-translate-one: ## Try one message with the model in ENV=lab/local.env (TEXT=, TARGET=; or pipe it in)
+translate-one: ## Try one message with the model in ENV=lab/local.env (TEXT=, TARGET=, DIAGNOSE=1)
 	@test -n "$(ENV)" || { echo "ENV=lab/local.env is required (see README, Try translations outside Slack)"; exit 2; }
-	$(UV) run python scripts/translate_one.py --env "$(ENV)" $(if $(TARGET),--target "$(TARGET)") $(if $(TEXT),--text "$(TEXT)")
+	$(UV) run python scripts/translate_one.py --env "$(ENV)" $(if $(TARGET),--target "$(TARGET)") $(if $(TEXT),--text "$(TEXT)") $(if $(DIAGNOSE),--diagnose)
 
 translate-file: ## Try a file of messages: ENV=lab/local.env FILE=lab/sample.txt (TARGET=, OUT=)
 	@test -n "$(ENV)" -a -n "$(FILE)" || { echo "ENV=lab/local.env and FILE=lab/sample.txt are required"; exit 2; }

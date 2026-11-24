@@ -84,6 +84,11 @@ target, seconds, whether it worked, the error kind, the Slack token check, Lingu
 lead, the model and endpoint, token counts, and empty `rating` (`usable`, `needs edits` or `wrong`)
 and `notes` columns for you. Progress and the summary never print message text.
 
+If a model fails, `make translate-one ENV=lab/local.env DIAGNOSE=1` sends one fixed, made-up
+request with the same settings and shows what the provider itself answers (a model that does not
+exist, a routing rule that matches no endpoint, memory that is not enough). It never sends your
+messages, which is why it can show the provider's words; the translation commands never do.
+
 If something looks wrong: `unavailable (HTTP 500)` from a local server usually means the server
 could not load the model, so read its own log (Ollama says when the model does not fit in memory);
 `timeout` means raise `TRANSLATOR_TIMEOUT`; `invalid_response` means an empty or cut-off answer, so

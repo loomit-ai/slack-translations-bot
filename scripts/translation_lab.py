@@ -10,6 +10,7 @@ print no message text except the translation the person asked to see.
 """
 
 import csv
+import json
 import re
 import subprocess
 import sys
@@ -22,6 +23,7 @@ from pathlib import Path
 from typing import Final, Protocol, cast
 from urllib.parse import urlsplit
 
+import httpx
 from pydantic import ValidationError
 
 from slack_translator.delivery.settings import Settings, invalid_keys
@@ -456,6 +458,55 @@ def summarize(outcomes: Sequence[Outcome]) -> Summary:
         flagged=sum(1 for o in worked if not o.check.ok),
         average_seconds=sum(o.seconds for o in outcomes) / len(outcomes) if outcomes else 0.0,
     )
+
+
+@dataclass(frozen=True, slots=True)
+class Diagnosis:
+    reached: bool
+    status: int | None
+    message: str
+
+
+_PING: Final = "Reply with the single word: ok"
+
+
+async def diagnose(profile: Profile) -> Diagnosis:
+    """Send one fixed made-up request with the profile's own settings and report what the
+    provider itself answers.
+
+    The translator never keeps a provider's error body, because bodies can echo the request. This
+    request holds no message of anyone, so the provider's own words (a model that does not exist,
+    a routing rule that matches no endpoint, memory that is not enough) are safe to show.
+    """
+    settings = profile.settings
+    body = {
+        **settings.translator_extra_body,
+        "model": settings.translator_model,
+        "temperature": 0,
+        "messages": [{"role": "user", "content": _PING}],
+    }
+    headers = {"Authorization": f"Bearer {settings.translator_api_key.get_secret_value()}"}
+    url = f"{settings.translator_base_url}/chat/completions"
+    try:
+        async with httpx.AsyncClient(timeout=settings.translator_timeout) as client:
+            response = await client.post(url, json=body, headers=headers)
+    except httpx.TimeoutException:
+        return Diagnosis(reached=True, status=None, message="no answer within the timeout")
+    except httpx.HTTPError:
+        return Diagnosis(reached=False, status=None, message="could not connect to the endpoint")
+    return Diagnosis(reached=True, status=response.status_code, message=_provider_words(response))
+
+
+def _provider_words(response: httpx.Response) -> str:
+    if response.is_success:
+        return "the model answered the test request"
+    try:
+        payload = response.json()
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return response.text[:300].strip() or "no message"
+    error = payload.get("error") if isinstance(payload, dict) else None
+    detail = error.get("message") if isinstance(error, dict) else error
+    return (str(detail) if detail else response.text)[:500].strip() or "no message"
 
 
 def validate_target(target: str) -> str:
