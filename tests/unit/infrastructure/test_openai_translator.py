@@ -20,7 +20,7 @@ from tests.support.model_fakes import RecordingTelemetry, SteppingClock
 from slack_translator.domain.errors import ModelError, ModelErrorCategory
 from slack_translator.domain.languages import LanguageCode
 from slack_translator.infrastructure.call_context import attempt_scope
-from slack_translator.infrastructure.openai_translator import OpenAITranslator
+from slack_translator.infrastructure.openai_translator import PROMPT_VERSION, OpenAITranslator
 
 KOREAN = "파란 상자에 종이 별이 세 개 있어요."
 SLACK_TEXT = (
@@ -400,6 +400,7 @@ async def test_success_emits_one_record_with_the_contract_fields(
     assert record.http_status == 200
     assert record.input_chars == len(KOREAN)
     assert (record.prompt_tokens, record.completion_tokens) == (12, 7)
+    assert record.prompt_version == PROMPT_VERSION
 
 
 async def test_tokens_are_empty_when_the_provider_sends_no_usage(

@@ -287,5 +287,6 @@ class OpenAITranslator:
                 input_chars=len(text),
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
+                prompt_version=PROMPT_VERSION,
             )
         )

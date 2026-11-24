@@ -21,7 +21,7 @@ ALLOWED_FIELDS = {
     "confidence", "target_language", "operation", "provider", "model", "prompt_version",
     "attempt", "latency_ms", "input_chars", "prompt_tokens", "completion_tokens", "outcome",
     "error_category", "http_status", "slack_method", "slack_error", "drop_reason",
-    "recipient_count", "exception_type", "refusal_reason",
+    "recipient_count", "exception_type", "refusal_reason", "logger",
 }  # fmt: skip
 
 # MET-01 to MET-09: the metric families the exposition must carry.
@@ -55,7 +55,7 @@ class Rig:
         return self.telemetry.registry.get_sample_value(name, labels)
 
 
-def rig(log_level: str = "INFO", prompt_version: str = "pv-test") -> Rig:
+def rig(log_level: str = "INFO") -> Rig:
     lines: list[str] = []
     telemetry = LogTelemetry(
         app_env="staging",
@@ -63,7 +63,6 @@ def rig(log_level: str = "INFO", prompt_version: str = "pv-test") -> Rig:
         log_level=log_level,
         sink=lines.append,
         now=lambda: MOMENT,
-        prompt_version=prompt_version,
     )
     return Rig(telemetry, lines)
 
@@ -80,6 +79,7 @@ def record(**changes: Any) -> ModelCallRecord:
         "input_chars": 36,
         "prompt_tokens": 120,
         "completion_tokens": 40,
+        "prompt_version": "pv-test",
     }
     values.update(changes)
     return ModelCallRecord(**values)
@@ -374,7 +374,13 @@ def test_a_detection_call_names_no_prompt_version() -> None:
     r = rig()
 
     r.telemetry.model_call(
-        record(operation="detect", provider="lingua", model="lingua-2.2.0", http_status=None)
+        record(
+            operation="detect",
+            provider="lingua",
+            model="lingua-2.2.0",
+            http_status=None,
+            prompt_version=None,
+        )
     )
 
     assert "prompt_version" not in r.events[0]
@@ -540,4 +546,19 @@ def test_third_party_loggers_are_held_at_warning_and_never_print_their_text() ->
     assert {e["event"] for e in r.events} == {"third_party.log"}
     assert [e["level"] for e in r.events] == ["WARNING"] * 5 + ["ERROR"]
     assert r.events[-1]["exception_type"] == "KeyError"
+    assert [e["logger"] for e in r.events] == [
+        "slack_bolt", "slack_sdk", "aiohttp", "httpx", "httpcore", "slack_sdk",
+    ]  # fmt: skip
     assert all(set(e) <= ALLOWED_FIELDS for e in r.events)
+
+
+@pytest.mark.usefixtures("third_party_loggers")
+def test_a_child_logger_is_named_by_the_guarded_library() -> None:
+    r = rig()
+    r.telemetry.guard_third_party_loggers()
+
+    logging.getLogger("slack_bolt.AsyncApp").warning("MARKER-child-text")
+
+    [event] = r.events
+    assert event["logger"] == "slack_bolt"
+    assert "MARKER-child-text" not in r.lines[0]

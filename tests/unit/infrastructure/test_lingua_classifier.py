@@ -168,6 +168,7 @@ async def test_success_emits_one_record_without_the_text(
     assert record.http_status is None
     assert record.input_chars == len(K1)
     assert (record.prompt_tokens, record.completion_tokens) == (None, None)
+    assert record.prompt_version is None
     assert K1 not in repr(record)
 
 

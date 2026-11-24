@@ -27,7 +27,7 @@ class ModelErrorCategory(StrEnum):
     RATE_LIMITED = "rate_limited"  # HTTP 429, retryable
     UNAVAILABLE = "unavailable"  # HTTP 5xx or connection failure, retryable
     REJECTED = "rejected"  # other HTTP 4xx, not retryable
-    INVALID_RESPONSE = "invalid_response"  # not retryable
+    INVALID_RESPONSE = "invalid_response"  # empty or malformed answer; one retry (decision 5)
 
 
 RETRYABLE_MODEL_ERRORS = frozenset(
@@ -35,6 +35,7 @@ RETRYABLE_MODEL_ERRORS = frozenset(
         ModelErrorCategory.TIMEOUT,
         ModelErrorCategory.RATE_LIMITED,
         ModelErrorCategory.UNAVAILABLE,
+        ModelErrorCategory.INVALID_RESPONSE,
     }
 )
 
@@ -83,6 +84,7 @@ class ModelCallRecord:
     input_chars: int
     prompt_tokens: int | None
     completion_tokens: int | None
+    prompt_version: str | None = None  # set by the adapter that owns the prompt (CR-06)
 
 
 class ResponseUrlUnusable(Exception):

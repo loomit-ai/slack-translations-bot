@@ -30,7 +30,6 @@ from slack_translator.domain.ports import (
     TranslateOutcome,
 )
 from slack_translator.infrastructure.call_context import current_correlation_id
-from slack_translator.infrastructure.openai_translator import PROMPT_VERSION
 
 LogSink = Callable[[str], None]
 
@@ -43,6 +42,7 @@ ALLOWED_LOG_FIELDS: Final = frozenset(
         "prompt_version", "attempt", "latency_ms", "input_chars", "prompt_tokens",
         "completion_tokens", "outcome", "error_category", "http_status", "slack_method",
         "slack_error", "drop_reason", "recipient_count", "exception_type", "refusal_reason",
+        "logger",
     }
 )  # fmt: skip
 
@@ -113,7 +113,6 @@ class LogTelemetry:
         registry: CollectorRegistry | None = None,
         sink: LogSink | None = None,
         now: Callable[[], datetime] = _utc_now,
-        prompt_version: str = PROMPT_VERSION,
     ) -> None:
         self.registry = registry if registry is not None else CollectorRegistry()
         self._app_env = app_env
@@ -121,7 +120,6 @@ class LogTelemetry:
         self._threshold = _LEVELS[log_level]
         self._sink = sink if sink is not None else _stdout
         self._now = now
-        self._prompt_version = prompt_version
 
         reg = self.registry
         call_labels = ["operation", "provider", "model", "outcome"]
@@ -188,8 +186,8 @@ class LogTelemetry:
     def guard_third_party_loggers(self) -> None:
         """LOG-03: hold the Slack, aiohttp and httpx loggers at WARNING and replace their text.
 
-        Their records become `third_party.log` lines with level and exception class only; the
-        logger name is left out because LOG-01 has no field for it.
+        Their records become `third_party.log` lines with level, the library's logger name (from
+        the fixed list above) and exception class only, never the library's own message.
         """
         handler = _ThirdPartyHandler(self)
         for name in THIRD_PARTY_LOGGERS:
@@ -348,7 +346,7 @@ class LogTelemetry:
             error_category=record.outcome if failed else None,
             http_status=record.http_status,
             correlation_id=_identifier(correlation_id or current_correlation_id()),
-            prompt_version=self._prompt_version if record.operation == "translate" else None,
+            prompt_version=record.prompt_version,
         )
 
     def translate_completed(
@@ -407,11 +405,12 @@ class LogTelemetry:
             correlation_id=_identifier(correlation_id),
         )
 
-    def emit_third_party(self, level: str, exception_type: str | None) -> None:
+    def emit_third_party(self, level: str, logger: str | None, exception_type: str | None) -> None:
         """Called by the LOG-03 guard. Not part of the `Telemetry` port."""
         self._emit(
             "third_party.log",
             level,
+            logger=logger if logger in THIRD_PARTY_LOGGERS else None,
             exception_type=(
                 exception_type
                 if exception_type is not None and _EXCEPTION_NAME.fullmatch(exception_type)
@@ -449,5 +448,6 @@ class _ThirdPartyHandler(logging.Handler):
         exception = record.exc_info[0] if record.exc_info else None
         self._telemetry.emit_third_party(
             "ERROR" if record.levelno >= logging.ERROR else "WARNING",
+            record.name.split(".")[0],
             exception.__name__ if exception is not None else None,
         )

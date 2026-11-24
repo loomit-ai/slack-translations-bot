@@ -14,7 +14,7 @@ import random
 from collections.abc import Awaitable, Callable
 from typing import Final, Protocol, runtime_checkable
 
-from slack_translator.domain.errors import RETRYABLE_MODEL_ERRORS, ModelError, ModelErrorCategory
+from slack_translator.domain.errors import ModelError, ModelErrorCategory
 from slack_translator.domain.languages import LanguageCode
 from slack_translator.domain.ports import Clock, Translator
 from slack_translator.infrastructure.call_context import attempt_scope, current_retry_notice
@@ -26,9 +26,6 @@ OnRetry = Callable[[ModelErrorCategory], Awaitable[None]]
 MIN_PAUSE: Final = 0.3
 MAX_PAUSE: Final = 1.0
 MAX_RETRY_AFTER: Final = 5.0
-
-# Decision 5 beats IF-03: an unusable answer gets one more try, like a transient failure.
-RETRIED: Final = RETRYABLE_MODEL_ERRORS | {ModelErrorCategory.INVALID_RESPONSE}
 
 
 @runtime_checkable
@@ -82,7 +79,7 @@ class RetryingTranslator:
             return await self._inner.translate(text, target_language, source_language_hint)
 
     def _pause_before_retry(self, failure: ModelError) -> float | None:
-        if failure.category not in RETRIED:
+        if not failure.retryable:
             return None
         if failure.retry_after is None:
             return self._uniform(MIN_PAUSE, MAX_PAUSE)
