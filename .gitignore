@@ -21,6 +21,13 @@ Thumbs.db
 .env
 .env.local
 .env.*.local
+.env.development
+.env.staging
+.env.prod
+.env.production
+
+# Samples, env files for models and results of the translation tools (US-13): real text, never committed
+/lab/
 
 # Logs
 *.log

@@ -2,7 +2,7 @@
 UV ?= uv
 IMAGE ?= slack-translator:dev
 
-.PHONY: help install run dev test lint format typecheck imports guards check clean image fake-translator
+.PHONY: help install run dev test lint format typecheck imports guards check clean image fake-translator translate-one translate-file
 
 help: ## Show this list
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*## "} {printf "  %-16s %s\n", $$1, $$2}'
@@ -46,3 +46,11 @@ image: ## Build the container image
 
 fake-translator: ## Run the fake translator endpoint (TS-02) for manual fault tests
 	$(UV) run python -m tests.support.fake_translator
+
+translate-one: ## Try one message with the model in ENV=lab/local.env (TEXT=, TARGET=; or pipe it in)
+	@test -n "$(ENV)" || { echo "ENV=lab/local.env is required (see README, Try translations outside Slack)"; exit 2; }
+	$(UV) run python scripts/translate_one.py --env "$(ENV)" $(if $(TARGET),--target "$(TARGET)") $(if $(TEXT),--text "$(TEXT)")
+
+translate-file: ## Try a file of messages: ENV=lab/local.env FILE=lab/sample.txt (TARGET=, OUT=)
+	@test -n "$(ENV)" -a -n "$(FILE)" || { echo "ENV=lab/local.env and FILE=lab/sample.txt are required"; exit 2; }
+	$(UV) run python scripts/translate_file.py --env "$(ENV)" "$(FILE)" $(if $(TARGET),--target "$(TARGET)") $(if $(OUT),--out "$(OUT)")
