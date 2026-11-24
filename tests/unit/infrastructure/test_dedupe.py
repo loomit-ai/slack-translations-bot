@@ -2,8 +2,9 @@
 
 import asyncio
 
-from slack_translator.infrastructure.dedupe import DuplicateGuard
 from tests.support.fake_ports import FakeClock
+
+from slack_translator.infrastructure.dedupe import DuplicateGuard
 
 
 def test_the_first_sight_of_a_key_passes_and_every_repeat_is_a_duplicate() -> None:
