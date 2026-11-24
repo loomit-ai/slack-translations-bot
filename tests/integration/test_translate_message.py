@@ -310,14 +310,21 @@ class TestDelivery:
         assert len(h.slack.calls_of(RESPONSE_URL)) == 5
         assert len(h.slack.calls_of("chat.postEphemeral")) == 1
 
-    async def test_when_both_ways_fail_nothing_is_posted_publicly_and_nothing_crashes(
+    async def test_when_both_ways_fail_it_is_counted_as_a_delivery_failure_not_as_shown(
         self, h: Harness
     ) -> None:
         h.slack.fail_next(RESPONSE_URL, "used_url", status=404)
         h.slack.fail_next("chat.postEphemeral", "channel_not_found")
+
         response = await h.deliver_and_settle(shortcut(h))
+
         assert response is not None and response.status == 200
         h.slack.assert_no_public_writes()
+        outcomes = [e.fields["outcome"] for e in h.telemetry.named("translate_completed")]
+        assert outcomes == ["delivery_failed"]
+        assert len(h.slack.calls_of(RESPONSE_URL)) == 1
+        assert len(h.slack.calls_of("chat.postEphemeral")) == 1
+        assert h.telemetry.named("internal_error") == []
 
 
 class TestModelOutputIsData:

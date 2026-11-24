@@ -26,7 +26,12 @@ RefusalReason = Literal["workspace", "channel"]
 DropReason = Literal["not_allowlisted", "subtype", "bot", "empty", "too_short", "duplicate"]
 ClassifyResult = Literal["customer", "team", "other", "low_confidence", "error"]
 TranslateOutcome = Literal[
-    "shown", "already_read_language", "message_unavailable", "nothing_to_translate", "failed"
+    "shown",
+    "already_read_language",
+    "message_unavailable",
+    "nothing_to_translate",
+    "failed",
+    "delivery_failed",
 ]
 OfferOutcome = Literal["sent", "failed", "expired"]
 SlackCallOutcome = Literal["ok", "rate_limited", "error", "timeout"]

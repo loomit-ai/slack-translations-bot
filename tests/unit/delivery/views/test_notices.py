@@ -29,3 +29,8 @@ def test_each_notice_is_a_single_section_with_an_identical_fallback(message, sen
     block = message.blocks[0]
     assert block["type"] == "section"
     assert block["text"]["text"] == sentence
+
+
+@pytest.mark.parametrize("message", [progress_message(), error_notice_message()])
+def test_the_progress_notes_are_plain_text_sections_as_ui_03_specifies(message) -> None:
+    assert message.blocks[0]["text"]["type"] == "plain_text"

@@ -305,10 +305,10 @@ class TranslateMessage:
         target_language: str | None,
         language: str | None,
     ) -> None:
-        await self._deliver(request, outcome)
+        delivered = await self._deliver(request, outcome)
         self._telemetry.translate_completed(
             entry=request.entry,
-            outcome=result,
+            outcome=result if delivered else "delivery_failed",
             correlation_id=request.correlation_id,
             target_language=target_language,
             language=language,
@@ -316,10 +316,13 @@ class TranslateMessage:
 
     async def _deliver(
         self, request: TranslateRequest, outcome: ReadOutcome, *, quiet: bool = False
-    ) -> None:
+    ) -> bool:
         """Response URL first; on any trouble, `chat.postEphemeral` to the same member (UI-17).
 
-        `quiet` is for the progress note: if it cannot be delivered the result still can.
+        Returns whether the member was shown the message. When both ways fail nothing more is sent:
+        the failure is already counted by the gateway (MET-07), and a second message would only
+        hit the same broken transport. `quiet` is for the progress notes: if one cannot be
+        delivered the result still can.
         """
         message = self._presenter.present(outcome)
         mode: Literal["new", "replace"] = "replace" if request.entry == "retry" else "new"
@@ -329,13 +332,23 @@ class TranslateMessage:
                 await self._responder.via_response_url(
                     request.response_url, message, mode, thread_ts
                 )
-                return
+                return True
             except (ResponseUrlUnusable, SlackDeliveryError):
-                if quiet:
-                    return
-        elif quiet:
-            return
+                pass
+            except Exception as error:
+                self._unexpected(request, error)
+        if quiet:
+            return False
         try:
             await self._responder.ephemeral(request.channel, request.user_id, message, thread_ts)
         except SlackDeliveryError:
-            return
+            return False
+        except Exception as error:
+            self._unexpected(request, error)
+            return False
+        return True
+
+    def _unexpected(self, request: TranslateRequest, error: Exception) -> None:
+        self._telemetry.internal_error(
+            exception_type=type(error).__name__, correlation_id=request.correlation_id
+        )

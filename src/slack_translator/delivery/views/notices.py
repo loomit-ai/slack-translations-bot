@@ -1,21 +1,23 @@
 """UI-03, UI-06, UI-07, UI-09 and the no-text sentence: one section, identical fallback (UI-18)."""
 
+from typing import Literal
+
 from slack_translator.domain.messages import PrivateMessage
 
 
-def _notice(sentence: str) -> PrivateMessage:
+def _notice(sentence: str, kind: Literal["mrkdwn", "plain_text"] = "mrkdwn") -> PrivateMessage:
     return PrivateMessage(
         text=sentence,
-        blocks=[{"type": "section", "text": {"type": "mrkdwn", "text": sentence}}],
+        blocks=[{"type": "section", "text": {"type": kind, "text": sentence}}],
     )
 
 
 def progress_message() -> PrivateMessage:
-    return _notice("Translating…")
+    return _notice("Translating…", "plain_text")
 
 
 def error_notice_message() -> PrivateMessage:
-    return _notice("An error has occurred…")
+    return _notice("An error has occurred…", "plain_text")
 
 
 def already_read_message(reading_language: str) -> PrivateMessage:
