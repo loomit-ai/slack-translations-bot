@@ -219,7 +219,6 @@ class LogTelemetry:
         correlation_id: str,
         team_id: str | None,
         channel_id: str,
-        user_id: str,
     ) -> None:
         self._refused.labels(reason).inc()
         self._emit(
@@ -231,7 +230,6 @@ class LogTelemetry:
             correlation_id=_identifier(correlation_id),
             team_id=_identifier(team_id),
             channel_id=_identifier(channel_id),
-            user_id=_identifier(user_id),
         )
 
     def event_dropped(

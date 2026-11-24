@@ -233,17 +233,15 @@ class TranslateMessage:
         """Look the person up, always (decision 23). The payload only allows an early "no".
 
         A click that names another workspace is refused without a lookup. Everything else asks
-        the directory, which caches successes for 10 minutes and never caches a failure.
+        the directory, which caches successes for 10 minutes and never caches a failure. An
+        exception from the directory is not handled here: `_admit` logs its class and refuses.
         """
         home = self._home.team_id
         if home is None:
             return "unverified"
         if request.team_id is not None and request.team_id != home:
             return "workspace"
-        try:
-            facts = await self._directory.user_facts(request.user_id)
-        except Exception:
-            facts = None
+        facts = await self._directory.user_facts(request.user_id)
         return membership(facts, home)
 
     async def _detect(self, request: TranslateRequest, cleaned: str) -> Detection | None:
@@ -321,7 +319,6 @@ class TranslateMessage:
             correlation_id=request.correlation_id,
             team_id=request.team_id,
             channel_id=request.channel,
-            user_id=request.user_id,
         )
 
     async def _finish(

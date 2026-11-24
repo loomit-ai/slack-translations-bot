@@ -177,7 +177,9 @@ class SlackGateway:
             is_restricted=bool(user.get("is_restricted") or user.get("is_ultra_restricted")),
             is_stranger=bool(user.get("is_stranger")),
         )
-        self._users.set(user_id, facts)
+        if facts.team_id is not None:
+            # An answer without a workspace is incomplete: it must not stick for 10 minutes.
+            self._users.set(user_id, facts)
         return facts
 
     async def channel_members(self, channel_id: str) -> Sequence[str]:

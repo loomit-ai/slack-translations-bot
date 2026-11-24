@@ -111,7 +111,7 @@ EVERY_METHOD: list[Callable[[LogTelemetry], None]] = [
     lambda t: t.shutdown(),
     lambda t: t.request_refused(
         reason="channel", entry="shortcut", correlation_id="c1", team_id="T1",
-        channel_id="C0123ABCDE", user_id="U1",
+        channel_id="C0123ABCDE",
     ),
     lambda t: t.event_dropped(reason="bot", slack_event_id="Ev1", channel_id="C0123ABCDE"),
     lambda t: t.classify_completed(
@@ -205,14 +205,15 @@ def test_a_refusal_names_its_error_category_and_is_counted(reason: Any, category
 
     r.telemetry.request_refused(
         reason=reason, entry="shortcut", correlation_id="c1", team_id=None,
-        channel_id="C0123ABCDE", user_id="U1",
+        channel_id="C0123ABCDE",
     )  # fmt: skip
 
     [event] = r.events
     assert event["event"] == "request.refused"
     assert event["error_category"] == category
     assert event["refusal_reason"] == reason
-    assert (event["entry"], event["correlation_id"], event["user_id"]) == ("shortcut", "c1", "U1")
+    assert (event["entry"], event["correlation_id"]) == ("shortcut", "c1")
+    assert "user_id" not in event, "a refusal never names the person"
     assert "team_id" not in event
     assert r.count("translator_requests_refused_total", reason=reason) == 1
 

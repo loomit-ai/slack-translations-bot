@@ -620,3 +620,56 @@ class TestMembership:
         assert response_url_posts(h)[0]["text"] == (
             "Translation is available only in approved channels."
         )
+
+
+@pytest.mark.parametrize("listener", ["translate_message", "translate_retry"])
+class TestMembershipReview:
+    """QA findings on CR-09 part A."""
+
+    async def test_an_incomplete_lookup_is_not_cached_so_the_next_click_asks_again(
+        self, h: Harness, listener: str
+    ) -> None:
+        h.slack.add_message(CHANNEL, TS, KOREAN)
+        h.slack.users[ACTOR] = {"id": ACTOR, "is_bot": False, "deleted": False}
+
+        await h.deliver_and_settle(click(h, listener, "T0HOME"))
+        assert h.slack.calls_of_kind("private_write") == []
+        assert [e.fields["reason"] for e in h.telemetry.named("request_refused")] == ["unverified"]
+
+        h.slack.users[ACTOR] = {"id": ACTOR, **HOME_MEMBER}
+        await h.deliver_and_settle(click(h, listener, "T0HOME"))
+
+        assert len(h.slack.calls_of("users.info")) == 2
+        assert len(h.translator.calls) == 1
+
+    async def test_a_complete_lookup_is_still_cached(self, h: Harness, listener: str) -> None:
+        h.slack.add_message(CHANNEL, TS, KOREAN)
+        h.slack.users[ACTOR] = {"id": ACTOR, **HOME_MEMBER}
+        await h.deliver_and_settle(click(h, listener, "T0HOME"))
+        await h.deliver_and_settle(click(h, listener, "T0HOME"))
+        assert len(h.slack.calls_of("users.info")) == 1
+
+    async def test_a_refusal_never_names_the_person(self, h: Harness, listener: str) -> None:
+        h.slack.users[ACTOR] = {"id": ACTOR, **HOME_MEMBER, "team_id": "T0OTHER"}
+        await h.deliver_and_settle(click(h, listener, "T0HOME"))
+        [event] = h.telemetry.named("request_refused")
+        assert "user_id" not in event.fields
+        assert ACTOR not in repr(event)
+
+    async def test_an_error_from_the_directory_is_logged_by_class_and_counted_unverified(
+        self, h: Harness, listener: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        async def explode(_: str) -> None:
+            raise RuntimeError("secret profile marker")
+
+        monkeypatch.setattr(h.app._gateway, "user_facts", explode)
+
+        response = await h.deliver_and_settle(click(h, listener, "T0HOME"))
+
+        assert response is not None and response.status == 200
+        assert h.slack.calls_of_kind("private_write") == []
+        assert h.translator.calls == []
+        [error] = h.telemetry.named("internal_error")
+        assert error.fields["exception_type"] == "RuntimeError"
+        assert [e.fields["reason"] for e in h.telemetry.named("request_refused")] == ["unverified"]
+        assert "secret" not in repr(h.telemetry.events)

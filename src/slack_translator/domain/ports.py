@@ -137,7 +137,6 @@ class Telemetry(Protocol):
         correlation_id: str,
         team_id: str | None,
         channel_id: str,
-        user_id: str,
     ) -> None: ...
 
     def event_dropped(
