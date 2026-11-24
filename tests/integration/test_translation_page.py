@@ -3,9 +3,12 @@ translator (TS-02). One group runs the real command as a process; the others sta
 in this process so a test can reach into the fake."""
 
 import asyncio
+import contextlib
 import csv
 import logging
+import os
 import re
+import signal
 import sys
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -132,8 +135,9 @@ async def impatient(fake: FakeTranslatorServer, tmp_path: Path) -> AsyncIterator
 class Command:
     """The real command as a process, with everything it prints kept."""
 
-    def __init__(self, process: asyncio.subprocess.Process) -> None:
+    def __init__(self, process: asyncio.subprocess.Process, *, group: bool = False) -> None:
         self.process = process
+        self.group = group
         self.seen: list[str] = []
         self.url = ""
 
@@ -152,7 +156,11 @@ class Command:
 
     async def stop(self) -> str:
         if self.process.returncode is None:
-            self.process.terminate()
+            if self.group:
+                with contextlib.suppress(ProcessLookupError):
+                    os.killpg(self.process.pid, signal.SIGTERM)
+            else:
+                self.process.terminate()
         out, err = await self.process.communicate()
         return "".join(self.seen) + out.decode() + err.decode()
 
@@ -168,14 +176,35 @@ async def start_command(*args: str) -> Command:
     return Command(process)
 
 
-async def run_command(*args: str) -> tuple[int, str]:
-    command = await start_command(*args)
+async def start_make(*args: str) -> Command:
+    process = await asyncio.create_subprocess_exec(
+        "make",
+        "-C",
+        str(REPO),
+        "translation-page",
+        *args,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        start_new_session=True,
+    )
+    return Command(process, group=True)
+
+
+async def finish(command: Command) -> tuple[int, str]:
     try:
-        async with asyncio.timeout(60):
+        async with asyncio.timeout(120):
             await command.process.wait()
     finally:
         output = await command.stop()
     return command.process.returncode or 0, output
+
+
+async def run_command(*args: str) -> tuple[int, str]:
+    return await finish(await start_command(*args))
+
+
+async def run_make(*args: str) -> tuple[int, str]:
+    return await finish(await start_make(*args))
 
 
 class TestTheCommand:
@@ -306,6 +335,52 @@ class TestTheCommand:
 
         assert "SOURCE-MARKER" not in output and "TRANSLATED-MARKER" not in output
         assert "fake provider error" not in output
+
+
+class TestTheMakeTarget:
+    """QA T1 again, for this target: make must never run what a value contains."""
+
+    async def test_a_profile_path_with_spaces_and_quotes_reaches_the_page_and_so_does_the_port(
+        self, fake: FakeTranslatorServer, tmp_path: Path
+    ) -> None:
+        folder = tmp_path / "my 'profiles' \"here\""
+        folder.mkdir()
+        env = write_env(folder, fake.base_url)
+        command = await start_make(f"ENV={env}", "PORT=0")
+        try:
+            await command.wait_for_address()
+            async with (
+                aiohttp.ClientSession(base_url=command.url) as session,
+                session.get("/api/info") as response,
+            ):
+                info = await response.json()
+        finally:
+            await command.stop()
+
+        assert info["model"] == "test-model" and info["env_name"] == env.name
+
+    async def test_a_value_with_backticks_is_never_run_by_make(self, tmp_path: Path) -> None:
+        ran = tmp_path / "ran"
+
+        code, output = await run_make(f"ENV=`touch {ran}`.env")
+
+        assert code != 0 and "env file not found" in output
+        assert not ran.exists()
+
+    async def test_a_port_with_backticks_is_never_run_by_make(
+        self, fake: FakeTranslatorServer, tmp_path: Path
+    ) -> None:
+        ran = tmp_path / "ran"
+        env = write_env(tmp_path, fake.base_url)
+
+        code, _ = await run_make(f"ENV={env}", f"PORT=`touch {ran}`")
+
+        assert code != 0 and not ran.exists()
+
+    async def test_a_missing_env_is_named_before_anything_starts(self) -> None:
+        code, output = await run_make("ENV=")
+
+        assert code == 2 and "ENV=" in output
 
 
 class TestWhatTheBrowserCanReach:

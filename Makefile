@@ -57,5 +57,5 @@ translate-file: ## Try a file of messages: ENV=lab/local.env FILE=lab/sample.txt
 	$(UV) run python scripts/translate_file.py --env "$$ENV" "$$FILE" $${TARGET:+--target "$$TARGET"} $${OUT:+--out "$$OUT"}
 
 translation-page: ## Try translations in the browser, on 127.0.0.1 only: ENV=lab/local.env (PORT=8765)
-	@test -n "$(ENV)" || { echo "ENV=lab/local.env is required (see README, Try translations outside Slack)"; exit 2; }
-	$(UV) run python scripts/translation_page.py --env "$(ENV)" $(if $(PORT),--port "$(PORT)")
+	@test -n "$$ENV" || { echo "ENV=lab/local.env is required (see README, Try translations outside Slack)"; exit 2; }
+	$(UV) run python scripts/translation_page.py --env "$$ENV" $${PORT:+--port "$$PORT"}
