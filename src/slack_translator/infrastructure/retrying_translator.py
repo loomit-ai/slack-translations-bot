@@ -12,20 +12,17 @@ per-request note use `retry_notice_scope` in `call_context`; both run when set.
 import contextlib
 import random
 from collections.abc import Awaitable, Callable
-from typing import Final, Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 from slack_translator.domain.errors import ModelError, ModelErrorCategory
 from slack_translator.domain.languages import LanguageCode
 from slack_translator.domain.ports import Clock, Translator
+from slack_translator.domain.retry import retry_pause
 from slack_translator.infrastructure.call_context import attempt_scope, current_retry_notice
 
 # Called once, with the first attempt's failure category, after the decision to retry and before
 # the pause and the second attempt.
 OnRetry = Callable[[ModelErrorCategory], Awaitable[None]]
-
-MIN_PAUSE: Final = 0.3
-MAX_PAUSE: Final = 1.0
-MAX_RETRY_AFTER: Final = 5.0
 
 
 @runtime_checkable
@@ -79,10 +76,4 @@ class RetryingTranslator:
             return await self._inner.translate(text, target_language, source_language_hint)
 
     def _pause_before_retry(self, failure: ModelError) -> float | None:
-        if not failure.retryable:
-            return None
-        if failure.retry_after is None:
-            return self._uniform(MIN_PAUSE, MAX_PAUSE)
-        if failure.retry_after > MAX_RETRY_AFTER:
-            return None
-        return failure.retry_after
+        return retry_pause(failure, self._uniform)
