@@ -9,7 +9,9 @@ receiving, gives in-flight work 10 seconds, and exits 0.
 import asyncio
 import contextlib
 import signal
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from typing import Protocol, runtime_checkable
 
 from aiohttp import web
 from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
@@ -49,6 +51,16 @@ class Overrides:
     slack_api_base_url: str = SLACK_API
 
 
+@runtime_checkable
+class _Preloadable(Protocol):
+    async def preload(self) -> None: ...
+
+
+@runtime_checkable
+class _Closeable(Protocol):
+    async def aclose(self) -> None: ...
+
+
 class _Authorization:
     """What Bolt needs to authorize a request, known after `auth.test` at startup.
 
@@ -82,6 +94,8 @@ class Application:
         telemetry: Telemetry,
         authorization: _Authorization,
         listener_names: tuple[str, ...],
+        preloads: list[Callable[[], Awaitable[None]]],
+        closers: list[Callable[[], Awaitable[None]]],
     ) -> None:
         self.settings = settings
         self.bolt = bolt
@@ -93,9 +107,16 @@ class Application:
         self._home = home
         self._telemetry = telemetry
         self._authorization = authorization
+        self._preloads = preloads
+        self._closers = closers
 
     async def prepare(self) -> None:
-        """`auth.test` and the channel membership checks. Fails if the workspace is unknown."""
+        """Load models, then `auth.test` and the channel checks. Fails if the workspace is unknown.
+
+        Order follows REQ-11.
+        """
+        for preload in self._preloads:
+            await preload()
         auth = await self._client.auth_test()
         self._home.team_id = str(auth["team_id"])
         self._authorization.set(self._home.team_id, auth.get("bot_id"), auth.get("user_id"))
@@ -129,8 +150,9 @@ class Application:
         self._telemetry.shutdown()
 
     async def close(self) -> None:
-        with contextlib.suppress(Exception):
-            await self._gateway.aclose()
+        for closer in self._closers:
+            with contextlib.suppress(Exception):
+                await closer()
 
     async def _bot_is_member(self, channel: str) -> bool:
         try:
@@ -203,6 +225,11 @@ def create_app(settings: Settings, overrides: Overrides | None = None) -> Applic
             clock=clock,
         ),
     )
+    preloads: list[Callable[[], Awaitable[None]]] = []
+    if isinstance(classifier, _Preloadable):
+        preloads.append(classifier.preload)
+    closers: list[Callable[[], Awaitable[None]]] = [gateway.aclose]
+    closers += [c.aclose for c in (classifier, translator) if isinstance(c, _Closeable)]
     return Application(
         settings,
         bolt,
@@ -214,4 +241,6 @@ def create_app(settings: Settings, overrides: Overrides | None = None) -> Applic
         telemetry,
         authorization,
         listener_names,
+        preloads,
+        closers,
     )
