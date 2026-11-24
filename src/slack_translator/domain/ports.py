@@ -13,6 +13,7 @@ from slack_translator.domain.errors import ModelCallRecord
 from slack_translator.domain.languages import LanguageCandidate, LanguageCode
 from slack_translator.domain.messages import (
     MessageRef,
+    OfferRequest,
     PrivateMessage,
     ReadOutcome,
     ResponseUrl,
@@ -98,6 +99,17 @@ class MemberDirectory(Protocol):
     async def user_facts(self, user_id: str) -> UserFacts | None: ...
 
     async def channel_members(self, channel_id: str) -> Sequence[str]: ...
+
+
+class OfferSender(Protocol):
+    """FLOW-02 step 5: one private offer per eligible member of the channel.
+
+    Never raises: every failure is counted and ends in silence for that member. It can take up to
+    the 60-second cut-off plus any rate-limit wait, so the caller starts it as background work
+    and does not wait for it inside an event handler.
+    """
+
+    async def send(self, request: OfferRequest) -> None: ...
 
 
 class ReadPresenter(Protocol):
