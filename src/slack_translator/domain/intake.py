@@ -13,6 +13,9 @@ from slack_translator.domain.languages import ConfiguredLanguage
 from slack_translator.domain.ports import ClassifyResult, DropReason
 from slack_translator.domain.text import MIN_LETTERS, clean_for_detection, letter_count
 
+# The app subscribes to public and private channels only (message.channels, message.groups).
+CHANNEL_TYPES: Final = frozenset({"channel", "group"})
+
 # A message with one of these subtypes is a human message; any other subtype is an edit, a
 # deletion, a join, a bot post and so on.
 CLASSIFIED_SUBTYPES: Final = frozenset({"file_share", "thread_broadcast"})
@@ -30,6 +33,7 @@ class MessageEvent:
     text: str | None
     subtype: str | None
     bot_id: str | None
+    channel_type: str | None = None  # `channel`, `group`, or what Slack calls a direct message
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,12 +48,20 @@ class Admitted:
     cleaned_text: str
 
 
+def _is_channel(event: MessageEvent) -> bool:
+    """Public or private channel. Without a conversation type, the ID prefix decides."""
+    if event.channel_type is not None:
+        return event.channel_type in CHANNEL_TYPES
+    return event.channel.startswith(("C", "G"))
+
+
 def screen(event: MessageEvent, is_served: Callable[[str], bool]) -> Dropped | Admitted:
     """The filters of FLOW-02 step 1, in order; the first that matches is the reason counted.
 
-    The duplicate check is not here because it needs state.
+    The duplicate check is not here because it needs state. A direct message is dropped before
+    the served check, which can have the side effect of remembering the channel as served.
     """
-    if not is_served(event.channel):
+    if not _is_channel(event) or not is_served(event.channel):
         return Dropped("not_allowlisted")
     if event.subtype is not None and event.subtype not in CLASSIFIED_SUBTYPES:
         return Dropped("subtype")

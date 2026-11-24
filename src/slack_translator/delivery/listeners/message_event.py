@@ -57,6 +57,7 @@ def parse_message_event(body: dict[str, Any]) -> MessageEvent | None:
         text=text if isinstance(text, str) else None,
         subtype=_text(event.get("subtype")),
         bot_id=_text(event.get("bot_id")),
+        channel_type=_text(event.get("channel_type")),
     )
 
 

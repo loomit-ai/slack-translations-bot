@@ -36,6 +36,7 @@ def event(**changes: Any) -> MessageEvent:
         text="Hola, ¿puedes ayudarme con esto?",
         subtype=None,
         bot_id=None,
+        channel_type="channel",
     )
     return replace(base, **changes)
 
@@ -67,6 +68,37 @@ def test_an_excluded_event_names_the_reason_it_is_dropped(
     changes: dict[str, Any], reason: DropReason
 ) -> None:
     assert screen(event(**changes), served) == Dropped(reason)
+
+
+@pytest.mark.parametrize("channel_type", ["im", "mpim", "app_home", "something_new"])
+def test_a_conversation_that_is_not_a_channel_is_dropped_without_asking_if_it_is_served(
+    channel_type: str,
+) -> None:
+    asked: list[str] = []
+
+    def served_spy(channel: str) -> bool:
+        asked.append(channel)
+        return True
+
+    assert screen(event(channel_type=channel_type), served_spy) == Dropped("not_allowlisted")
+    assert asked == []
+
+
+@pytest.mark.parametrize("channel_type", ["channel", "group"])
+def test_public_and_private_channels_are_classified(channel_type: str) -> None:
+    assert isinstance(screen(event(channel_type=channel_type), lambda channel: True), Admitted)
+
+
+def test_without_a_conversation_type_the_channel_id_decides() -> None:
+    assert isinstance(
+        screen(event(channel_type=None, channel="C0123ABCDE"), lambda c: True), Admitted
+    )
+    assert isinstance(
+        screen(event(channel_type=None, channel="G0123ABCDE"), lambda c: True), Admitted
+    )
+    assert screen(event(channel_type=None, channel="D0123ABCDE"), lambda c: True) == Dropped(
+        "not_allowlisted"
+    )
 
 
 @pytest.mark.parametrize("subtype", ["file_share", "thread_broadcast", None])

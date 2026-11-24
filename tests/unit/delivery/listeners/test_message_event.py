@@ -58,6 +58,7 @@ def test_a_plain_message_is_read_into_the_facts_intake_needs() -> None:
         text="파란 상자에 종이 별이 세 개 있어요.",
         subtype=None,
         bot_id=None,
+        channel_type="channel",
     )
 
 
@@ -95,15 +96,16 @@ def test_events_without_text_or_author_still_parse(subtype: str) -> None:
 
 
 def test_empty_strings_count_as_missing() -> None:
-    event = parsed({"subtype": "", "bot_id": "", "user": "", "thread_ts": ""})
+    event = parsed({"subtype": "", "bot_id": "", "user": "", "thread_ts": "", "channel_type": ""})
 
     assert event is not None
-    assert (event.subtype, event.bot_id, event.user_id, event.thread_root_ts) == (
-        None,
-        None,
-        None,
-        None,
-    )
+    assert (
+        event.subtype,
+        event.bot_id,
+        event.user_id,
+        event.thread_root_ts,
+        event.channel_type,
+    ) == (None, None, None, None, None)
 
 
 def test_a_text_that_is_not_text_is_treated_as_missing() -> None:

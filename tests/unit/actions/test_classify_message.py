@@ -40,6 +40,7 @@ def message(**changes: Any) -> MessageEvent:
         text=KOREAN,
         subtype=None,
         bot_id=None,
+        channel_type="channel",
     )
     return replace(base, **changes)
 
@@ -256,6 +257,8 @@ async def test_an_offer_step_that_fails_is_counted_after_the_classification() ->
     ("changes", "reason"),
     [
         ({"channel": "C9999999999"}, "not_allowlisted"),
+        ({"channel_type": "im", "channel": "D0123ABCDE"}, "not_allowlisted"),
+        ({"channel_type": "mpim"}, "not_allowlisted"),
         ({"subtype": "message_changed"}, "subtype"),
         ({"subtype": "message_deleted"}, "subtype"),
         ({"bot_id": "B0123ABCDE"}, "bot"),
