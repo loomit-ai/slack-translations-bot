@@ -175,6 +175,7 @@ class SlackGateway:
             is_bot=bool(user.get("is_bot")),
             deleted=bool(user.get("deleted")),
             is_restricted=bool(user.get("is_restricted") or user.get("is_ultra_restricted")),
+            is_stranger=bool(user.get("is_stranger")),
         )
         self._users.set(user_id, facts)
         return facts

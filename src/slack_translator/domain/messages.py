@@ -31,6 +31,7 @@ class UserFacts:
     is_bot: bool
     deleted: bool
     is_restricted: bool
+    is_stranger: bool
 
 
 @dataclass(frozen=True, slots=True)

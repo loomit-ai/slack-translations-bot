@@ -21,7 +21,7 @@ ALLOWED_FIELDS = {
     "confidence", "target_language", "operation", "provider", "model", "prompt_version",
     "attempt", "latency_ms", "input_chars", "prompt_tokens", "completion_tokens", "outcome",
     "error_category", "http_status", "slack_method", "slack_error", "drop_reason",
-    "recipient_count", "exception_type",
+    "recipient_count", "exception_type", "refusal_reason",
 }  # fmt: skip
 
 # MET-01 to MET-09: the metric families the exposition must carry.
@@ -192,7 +192,13 @@ def test_startup_and_shutdown_events() -> None:
 
 @pytest.mark.parametrize(
     ("reason", "category"),
-    [("workspace", "refused_workspace"), ("channel", "refused_channel")],
+    [
+        ("workspace", "refused_workspace"),
+        ("guest", "refused_workspace"),
+        ("email_domain", "refused_workspace"),
+        ("unverified", "refused_workspace"),
+        ("channel", "refused_channel"),
+    ],
 )
 def test_a_refusal_names_its_error_category_and_is_counted(reason: Any, category: str) -> None:
     r = rig()
@@ -205,6 +211,7 @@ def test_a_refusal_names_its_error_category_and_is_counted(reason: Any, category
     [event] = r.events
     assert event["event"] == "request.refused"
     assert event["error_category"] == category
+    assert event["refusal_reason"] == reason
     assert (event["entry"], event["correlation_id"], event["user_id"]) == ("shortcut", "c1", "U1")
     assert "team_id" not in event
     assert r.count("translator_requests_refused_total", reason=reason) == 1

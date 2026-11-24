@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from slack_translator.domain.action_values import ActionValue, encode
-from slack_translator.domain.boundary import actor_is_internal, channel_is_allowed
+from slack_translator.domain.boundary import channel_is_allowed, membership
 from slack_translator.domain.detection import (
     AlreadyRead,
     Detection,
@@ -35,7 +35,6 @@ from slack_translator.domain.messages import (
     Translated,
     Translating,
     TranslationFailed,
-    UserFacts,
 )
 from slack_translator.domain.ports import (
     ClassifyResult,
@@ -44,6 +43,7 @@ from slack_translator.domain.ports import (
     MessageReader,
     PrivateResponder,
     ReadPresenter,
+    RefusalReason,
     Telemetry,
     TranslateOutcome,
     Translator,
@@ -144,12 +144,13 @@ class TranslateMessage:
         an outsider gets no error and no Retry (decision 19).
         """
         try:
-            internal = await self._actor_is_internal(request)
+            verdict = await self._membership(request)
         except Exception as error:
             self._unexpected(request, error)
+            self._refuse(request, "unverified")
             return False
-        if not internal:
-            self._refuse(request, "workspace")
+        if verdict != "member":
+            self._refuse(request, verdict)
             return False
         if not channel_is_allowed(request.channel, self._policy.allowlist):
             self._refuse(request, "channel")
@@ -228,21 +229,22 @@ class TranslateMessage:
         )
         await self._finish(request, outcome, "shown", self._policy.read_language, hint)
 
-    async def _actor_is_internal(self, request: TranslateRequest) -> bool:
+    async def _membership(self, request: TranslateRequest) -> Literal["member"] | RefusalReason:
+        """Look the person up, always (decision 23). The payload only allows an early "no".
+
+        A click that names another workspace is refused without a lookup. Everything else asks
+        the directory, which caches successes for 10 minutes and never caches a failure.
+        """
         home = self._home.team_id
         if home is None:
-            return False
-        facts: UserFacts | None
-        if request.team_id is not None:
-            facts = UserFacts(
-                team_id=request.team_id, is_bot=False, deleted=False, is_restricted=False
-            )
-        else:
-            try:
-                facts = await self._directory.user_facts(request.user_id)
-            except Exception:
-                facts = None
-        return actor_is_internal(facts, home)
+            return "unverified"
+        if request.team_id is not None and request.team_id != home:
+            return "workspace"
+        try:
+            facts = await self._directory.user_facts(request.user_id)
+        except Exception:
+            facts = None
+        return membership(facts, home)
 
     async def _detect(self, request: TranslateRequest, cleaned: str) -> Detection | None:
         candidates = candidates_of(self._policy.languages)
@@ -312,7 +314,7 @@ class TranslateMessage:
         )
         return TranslationFailed(retry_value=encode(value))
 
-    def _refuse(self, request: TranslateRequest, reason: Literal["workspace", "channel"]) -> None:
+    def _refuse(self, request: TranslateRequest, reason: RefusalReason) -> None:
         self._telemetry.request_refused(
             reason=reason,
             entry=request.entry,

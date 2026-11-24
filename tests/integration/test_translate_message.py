@@ -401,7 +401,7 @@ class TestRegressionsFromQA:
         assert h.classifier.calls == [] and h.translator.calls == []
         assert h.slack.calls_of_kind("private_write") == []
         assert h.slack.calls_of("conversations.history") == []
-        assert [e.fields["reason"] for e in h.telemetry.named("request_refused")] == ["workspace"]
+        assert [e.fields["reason"] for e in h.telemetry.named("request_refused")] == ["unverified"]
         assert h.telemetry.named("internal_error") == []
 
     @pytest.mark.parametrize("status", [301, 302, 307])
@@ -446,7 +446,7 @@ class TestArchitectReview:
         def explode(*_: object) -> bool:
             raise RuntimeError("secret text must not be logged")
 
-        monkeypatch.setattr("slack_translator.actions.translate_message.actor_is_internal", explode)
+        monkeypatch.setattr("slack_translator.actions.translate_message.membership", explode)
         h.slack.add_message(CHANNEL, TS, KOREAN)
         url = h.slack.response_url()
         payload = (
@@ -461,6 +461,7 @@ class TestArchitectReview:
         assert h.slack.calls_of_kind("private_write") == []
         assert h.classifier.calls == [] and h.translator.calls == []
         assert h.telemetry.named("translate_requested") == []
+        assert [e.fields["reason"] for e in h.telemetry.named("request_refused")] == ["unverified"]
         [event] = h.telemetry.named("internal_error")
         assert event.fields["exception_type"] == "RuntimeError"
         assert "secret" not in repr(event)
@@ -495,3 +496,127 @@ class TestRetryNoteTiming:
             "English translation from Korean\nWhere is the blue box?",
         ]
         h.slack.assert_no_public_writes()
+
+
+ACTOR = "U0ACTOR"
+HOME_MEMBER = {"team_id": "T0HOME", "is_bot": False, "deleted": False}
+
+
+def click(h: Harness, listener: str, user_team: str | None) -> dict[str, Any]:
+    url = h.slack.response_url()
+    if listener == "translate_message":
+        return shortcut_payload(user=ACTOR, user_team=user_team, response_url=url)
+    return retry_payload(user=ACTOR, user_team=user_team, response_url=url)
+
+
+@pytest.mark.parametrize("listener", ["translate_message", "translate_retry"])
+class TestMembership:
+    """CR-09 part A: every actor is looked up, and every refusal is silent and counted."""
+
+    @pytest.mark.parametrize(
+        ("payload_team", "record", "reason", "lookups"),
+        [
+            pytest.param(
+                "T0OTHER", HOME_MEMBER, "workspace", 0, id="payload names another workspace"
+            ),
+            pytest.param(
+                "T0HOME",
+                {**HOME_MEMBER, "team_id": "T0OTHER"},
+                "workspace",
+                1,
+                id="directory names another workspace",
+            ),
+            pytest.param(
+                "T0HOME", {**HOME_MEMBER, "is_stranger": True}, "workspace", 1, id="stranger"
+            ),
+            pytest.param("T0HOME", {**HOME_MEMBER, "is_bot": True}, "workspace", 1, id="bot"),
+            pytest.param(
+                "T0HOME", {**HOME_MEMBER, "deleted": True}, "workspace", 1, id="deactivated"
+            ),
+            pytest.param(
+                "T0HOME",
+                {**HOME_MEMBER, "team_id": None},
+                "unverified",
+                1,
+                id="no workspace in the directory",
+            ),
+            pytest.param(
+                None, {**HOME_MEMBER, "team_id": None}, "unverified", 1, id="no workspace anywhere"
+            ),
+        ],
+    )
+    async def test_a_refused_actor_gets_nothing_and_is_counted_by_reason(
+        self,
+        h: Harness,
+        listener: str,
+        payload_team: str | None,
+        record: dict[str, Any],
+        reason: str,
+        lookups: int,
+    ) -> None:
+        h.slack.add_message(CHANNEL, TS, KOREAN)
+        h.slack.users[ACTOR] = {"id": ACTOR, **record}
+
+        response = await h.deliver_and_settle(click(h, listener, payload_team))
+
+        assert response is not None and response.status == 200
+        assert h.classifier.calls == [] and h.translator.calls == []
+        assert h.slack.calls_of_kind("private_write") == []
+        assert h.slack.calls_of("conversations.history") == []
+        assert len(h.slack.calls_of("users.info")) == lookups
+        assert [e.fields["reason"] for e in h.telemetry.named("request_refused")] == [reason]
+        assert h.telemetry.named("translate_requested") == []
+
+    async def test_a_person_the_directory_does_not_know_is_unverified(
+        self, h: Harness, listener: str
+    ) -> None:
+        await h.deliver_and_settle(click(h, listener, "T0HOME"))
+        assert h.slack.calls_of_kind("private_write") == []
+        assert [e.fields["reason"] for e in h.telemetry.named("request_refused")] == ["unverified"]
+
+    async def test_a_member_is_looked_up_even_when_the_payload_names_the_home_workspace(
+        self, h: Harness, listener: str
+    ) -> None:
+        h.slack.add_message(CHANNEL, TS, KOREAN)
+        h.slack.users[ACTOR] = {"id": ACTOR, **HOME_MEMBER}
+
+        await h.deliver_and_settle(click(h, listener, "T0HOME"))
+
+        assert len(h.slack.calls_of("users.info")) == 1
+        assert len(h.translator.calls) == 1
+        assert h.telemetry.named("request_refused") == []
+
+    async def test_a_lookup_that_fails_once_is_refused_and_the_next_click_is_served(
+        self, h: Harness, listener: str
+    ) -> None:
+        h.slack.add_message(CHANNEL, TS, KOREAN)
+        h.slack.users[ACTOR] = {"id": ACTOR, **HOME_MEMBER}
+        h.slack.fail_next("users.info", "internal_error")
+
+        await h.deliver_and_settle(click(h, listener, "T0HOME"))
+        assert h.slack.calls_of_kind("private_write") == []
+        assert [e.fields["reason"] for e in h.telemetry.named("request_refused")] == ["unverified"]
+
+        await h.deliver_and_settle(click(h, listener, "T0HOME"))
+        assert len(h.translator.calls) == 1
+        assert len(h.slack.calls_of("users.info")) == 2
+
+    async def test_a_member_in_a_channel_outside_the_allowlist_gets_the_notice_and_is_counted(
+        self, h: Harness, listener: str
+    ) -> None:
+        h.slack.users[ACTOR] = {"id": ACTOR, **HOME_MEMBER}
+        payload = click(h, listener, "T0HOME")
+        if listener == "translate_message":
+            payload["channel"]["id"] = "C0OTHERXYZ"
+        else:
+            payload["channel"]["id"] = "C0OTHERXYZ"
+            payload["container"]["channel_id"] = "C0OTHERXYZ"
+            payload["actions"][0]["value"] = '{"v":1,"c":"C0OTHERXYZ","ts":"1795478400.000100"}'
+
+        await h.deliver_and_settle(payload)
+
+        assert [e.fields["reason"] for e in h.telemetry.named("request_refused")] == ["channel"]
+        assert h.translator.calls == []
+        assert response_url_posts(h)[0]["text"] == (
+            "Translation is available only in approved channels."
+        )

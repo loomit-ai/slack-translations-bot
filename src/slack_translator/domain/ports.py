@@ -22,7 +22,7 @@ from slack_translator.domain.messages import (
 
 Entry = Literal["shortcut", "offer", "retry"]
 AckKind = Literal["shortcut", "action"]
-RefusalReason = Literal["workspace", "channel"]
+RefusalReason = Literal["workspace", "guest", "email_domain", "unverified", "channel"]
 DropReason = Literal["not_allowlisted", "subtype", "bot", "empty", "too_short", "duplicate"]
 ClassifyResult = Literal["customer", "team", "other", "low_confidence", "error"]
 TranslateOutcome = Literal[

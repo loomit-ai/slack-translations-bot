@@ -42,7 +42,7 @@ ALLOWED_LOG_FIELDS: Final = frozenset(
         "script", "confidence", "target_language", "operation", "provider", "model",
         "prompt_version", "attempt", "latency_ms", "input_chars", "prompt_tokens",
         "completion_tokens", "outcome", "error_category", "http_status", "slack_method",
-        "slack_error", "drop_reason", "recipient_count", "exception_type",
+        "slack_error", "drop_reason", "recipient_count", "exception_type", "refusal_reason",
     }
 )  # fmt: skip
 
@@ -62,6 +62,9 @@ _ACK_BUCKETS: Final = (0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 3, 5)
 
 _ERROR_CATEGORY_OF_REFUSAL: Final[dict[str, ErrorCategory]] = {
     "workspace": ErrorCategory.REFUSED_WORKSPACE,
+    "guest": ErrorCategory.REFUSED_WORKSPACE,
+    "email_domain": ErrorCategory.REFUSED_WORKSPACE,
+    "unverified": ErrorCategory.REFUSED_WORKSPACE,
     "channel": ErrorCategory.REFUSED_CHANNEL,
 }
 
@@ -223,6 +226,7 @@ class LogTelemetry:
             "request.refused",
             "INFO",
             error_category=_ERROR_CATEGORY_OF_REFUSAL[reason].value,
+            refusal_reason=reason,
             entry=entry,
             correlation_id=_identifier(correlation_id),
             team_id=_identifier(team_id),
