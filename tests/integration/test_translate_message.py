@@ -366,10 +366,18 @@ class TestStartup:
     ) -> None:
         h.slack.add_channel(CHANNEL, is_member=False)
         await h.app.prepare()
-        assert h.app.readiness.ready
         assert [
             e.fields["channel_id"] for e in h.telemetry.named("startup_channel_not_member")
         ] == [CHANNEL]
+
+    async def test_the_bot_is_not_ready_until_the_transport_says_so(self, h: Harness) -> None:
+        assert not h.app.readiness.ready
+        assert h.telemetry.named("startup_ready") == []
+
+        h.app.mark_ready()
+
+        assert h.app.readiness.ready
+        assert len(h.telemetry.named("startup_ready")) == 1
 
 
 class TestRegressionsFromQA:

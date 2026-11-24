@@ -127,6 +127,9 @@ class Application:
         for channel in self.settings.channel_allowlist:
             if not await self._bot_is_member(channel):
                 self._telemetry.startup_channel_not_member(channel_id=channel)
+
+    def mark_ready(self) -> None:
+        """Ready means able to receive: only called once the transport is connected (REQ-11)."""
         self.readiness.ready = True
         self._telemetry.startup_ready()
 
@@ -141,6 +144,8 @@ class Application:
             self.bolt, self.settings.slack_app_token.get_secret_value()
         )
         await handler.connect_async()
+        self.readiness.transport_connected = handler.client.is_connected
+        self.mark_ready()
 
         stop = asyncio.Event()
         loop = asyncio.get_running_loop()
