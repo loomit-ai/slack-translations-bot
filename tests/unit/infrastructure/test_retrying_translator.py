@@ -13,7 +13,7 @@ from slack_translator.domain.languages import LanguageCode
 from slack_translator.domain.ports import Clock, Translator
 from slack_translator.infrastructure.call_context import current_attempt, retry_notice_scope
 from slack_translator.infrastructure.openai_translator import OpenAITranslator
-from slack_translator.infrastructure.retrying_translator import RetryingTranslator
+from slack_translator.infrastructure.retrying_translator import OnRetry, RetryingTranslator
 
 KOREAN = "파란 상자에 종이 별이 세 개 있어요."
 MIDDLE = 0.65
@@ -46,8 +46,10 @@ class ScriptedTranslator:
         return outcome
 
 
-def retrying(inner: Translator, clock: Clock) -> RetryingTranslator:
-    return RetryingTranslator(inner, clock=clock, uniform=middle)
+def retrying(
+    inner: Translator, clock: Clock, on_retry: OnRetry | None = None
+) -> RetryingTranslator:
+    return RetryingTranslator(inner, clock=clock, uniform=middle, on_retry=on_retry)
 
 
 async def test_a_good_first_answer_is_returned_without_a_pause(clock: SteppingClock) -> None:
@@ -208,6 +210,101 @@ async def test_a_notice_that_fails_does_not_stop_the_retry(clock: SteppingClock)
     inner = ScriptedTranslator(failure(ModelErrorCategory.UNAVAILABLE), "ok")
     with retry_notice_scope(notice):
         assert await retrying(inner, clock).translate("hola", "en") == "ok"
+
+
+@pytest.mark.parametrize(
+    "category",
+    [
+        ModelErrorCategory.TIMEOUT,
+        ModelErrorCategory.RATE_LIMITED,
+        ModelErrorCategory.UNAVAILABLE,
+        ModelErrorCategory.INVALID_RESPONSE,
+    ],
+)
+async def test_on_retry_gets_the_first_failures_category_once_before_the_second_attempt(
+    category: ModelErrorCategory,
+) -> None:
+    events: list[str] = []
+
+    class OrderedClock(SteppingClock):
+        async def sleep(self, seconds: float) -> None:
+            events.append("pause")
+
+    class Ordered(ScriptedTranslator):
+        async def translate(
+            self, text: str, target_language: str, source_language_hint: LanguageCode | None = None
+        ) -> str:
+            events.append("attempt")
+            return await super().translate(text, target_language, source_language_hint)
+
+    async def on_retry(heard: ModelErrorCategory) -> None:
+        events.append(f"on_retry:{heard.value}")
+
+    inner = Ordered(failure(category), "ok")
+    assert await retrying(inner, OrderedClock(), on_retry).translate("hola", "en") == "ok"
+
+    assert events == ["attempt", f"on_retry:{category.value}", "pause", "attempt"]
+
+
+async def test_on_retry_is_not_called_when_nothing_is_retried(clock: SteppingClock) -> None:
+    heard: list[ModelErrorCategory] = []
+
+    async def on_retry(category: ModelErrorCategory) -> None:
+        heard.append(category)
+
+    await retrying(ScriptedTranslator("fine"), clock, on_retry).translate("hola", "en")
+    for refused in (
+        failure(ModelErrorCategory.REJECTED, status=400),
+        failure(ModelErrorCategory.RATE_LIMITED, 30.0, 429),
+    ):
+        with pytest.raises(ModelError):
+            await retrying(ScriptedTranslator(refused), clock, on_retry).translate("hola", "en")
+
+    assert heard == []
+
+
+async def test_on_retry_is_called_only_once_even_when_both_attempts_fail(
+    clock: SteppingClock,
+) -> None:
+    heard: list[ModelErrorCategory] = []
+
+    async def on_retry(category: ModelErrorCategory) -> None:
+        heard.append(category)
+
+    inner = ScriptedTranslator(
+        failure(ModelErrorCategory.TIMEOUT), failure(ModelErrorCategory.UNAVAILABLE, status=503)
+    )
+    with pytest.raises(ModelError):
+        await retrying(inner, clock, on_retry).translate("hola", "en")
+
+    assert heard == [ModelErrorCategory.TIMEOUT]
+
+
+async def test_an_on_retry_that_fails_does_not_stop_the_retry(clock: SteppingClock) -> None:
+    async def on_retry(category: ModelErrorCategory) -> None:
+        raise RuntimeError("Slack is down")
+
+    inner = ScriptedTranslator(failure(ModelErrorCategory.UNAVAILABLE), "ok")
+
+    assert await retrying(inner, clock, on_retry).translate("hola", "en") == "ok"
+
+
+async def test_on_retry_and_a_notice_scope_both_hear_about_the_failure(
+    clock: SteppingClock,
+) -> None:
+    heard: list[str] = []
+
+    async def on_retry(category: ModelErrorCategory) -> None:
+        heard.append(f"on_retry:{category.value}")
+
+    async def notice(error: ModelError) -> None:
+        heard.append(f"notice:{error.category.value}")
+
+    inner = ScriptedTranslator(failure(ModelErrorCategory.TIMEOUT), "ok")
+    with retry_notice_scope(notice):
+        await retrying(inner, clock, on_retry).translate("hola", "en")
+
+    assert heard == ["on_retry:timeout", "notice:timeout"]
 
 
 async def test_no_notice_when_there_is_nothing_to_retry(clock: SteppingClock) -> None:
