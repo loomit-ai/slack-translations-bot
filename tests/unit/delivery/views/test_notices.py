@@ -19,7 +19,7 @@ from slack_translator.delivery.views.notices import (
         (error_notice_message(), "An error has occurred…"),
         (already_read_message("English"), "This message is already in English."),
         (unavailable_message(), "This message is no longer available."),
-        (not_allowed_message(), "X3M Translator is unavailable in this channel."),
+        (not_allowed_message(), "Loomit Translator is unavailable in this channel."),
         (no_text_message(), "This message has no text to translate."),
     ],
 )

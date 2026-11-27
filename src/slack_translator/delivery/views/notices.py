@@ -4,6 +4,8 @@ from typing import Literal
 
 from slack_translator.domain.messages import PrivateMessage
 
+APP_NAME = "Loomit Translator"  # also written in slack/manifest.*.yaml
+
 
 def _notice(sentence: str, kind: Literal["mrkdwn", "plain_text"] = "mrkdwn") -> PrivateMessage:
     return PrivateMessage(
@@ -29,7 +31,7 @@ def unavailable_message() -> PrivateMessage:
 
 
 def not_allowed_message() -> PrivateMessage:
-    return _notice("X3M Translator is unavailable in this channel.", "plain_text")
+    return _notice(f"{APP_NAME} is unavailable in this channel.", "plain_text")
 
 
 def no_text_message() -> PrivateMessage:

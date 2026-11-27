@@ -210,7 +210,7 @@ class FakeSlackServer:
                 "url": "https://x3m.example.test/",
                 "team": "X3M",
                 "team_id": self.team_id,
-                "user": "x3m_translator",
+                "user": "loomit_translator",
                 "user_id": "U0BOT",
                 "bot_id": "B0BOT",
             }
