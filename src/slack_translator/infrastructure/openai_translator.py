@@ -84,7 +84,7 @@ _ERROR_STATUSES: Final[Mapping[int, ProviderError]] = {
     413: "context_too_long",
 }
 
-# Fixed phrases, searched in the lower-cased body as plain text. First match wins.
+# Fixed phrases, searched in the lower-cased error message as plain text. First match wins.
 _ERROR_PHRASES: Final[tuple[tuple[ProviderError, tuple[str, ...]], ...]] = (
     ("invalid_model", ("not a valid model", "model not found", "unknown model", "invalid model",
                        "does not exist or you do not have access")),
@@ -98,7 +98,7 @@ _ERROR_PHRASES: Final[tuple[tuple[ProviderError, tuple[str, ...]], ...]] = (
     ("content_filtered", ("content filter", "content policy", "moderation", "flagged")),
 )  # fmt: skip
 
-_UPSTREAM_SIGNS: Final = ("upstream", "provider returned error", "provider_name", "temporarily")
+_UPSTREAM_SIGNS: Final = ("upstream", "provider returned error", "temporarily")
 
 _ERROR_FALLBACKS: Final[Mapping[int, ProviderError]] = {
     400: "invalid_request",
@@ -107,27 +107,39 @@ _ERROR_FALLBACKS: Final[Mapping[int, ProviderError]] = {
 
 
 def _provider_error(response: httpx.Response) -> ProviderError:
-    """The fixed reason for a failed answer. Everything else in the body is discarded here."""
-    content = response.content[:_ERROR_BODY_LIMIT]
+    """The fixed reason for a failed answer. Everything else in the body is discarded here.
+
+    Phrases are searched only in the provider's own message field: other fields, such as
+    metadata, can carry the request text back.
+    """
     status = response.status_code
-    text = content.decode("utf-8", errors="ignore").lower()
+    message = ""
+    upstream_metadata = False
     if len(response.content) <= _ERROR_BODY_LIMIT:
         try:
-            parsed = _as_object(json.loads(content))
+            parsed = _as_object(json.loads(response.content))
         except ValueError:
             parsed = None
-        error = _as_object(parsed.get("error")) if parsed is not None else None
+        error = parsed.get("error") if parsed is not None else None
+        details = _as_object(error)
+        source = details if details is not None else parsed
+        field = error if isinstance(error, str) else None
+        if source is not None and field is None:
+            field = source.get("message")
+        message = field.lower() if isinstance(field, str) else ""
         for key in ("code", "type"):
-            word = error.get(key) if error is not None else None
+            word = details.get(key) if details is not None else None
             if isinstance(word, str) and word.lower() in _ERROR_IDENTIFIERS:
                 return _ERROR_IDENTIFIERS[word.lower()]
+        metadata = _as_object(details.get("metadata")) if details is not None else None
+        upstream_metadata = metadata is not None and "provider_name" in metadata
     if status in _ERROR_STATUSES:
         return _ERROR_STATUSES[status]
     for reason, phrases in _ERROR_PHRASES:
-        if any(phrase in text for phrase in phrases):
+        if any(phrase in message for phrase in phrases):
             return reason
     if status == 429:
-        upstream = any(sign in text for sign in _UPSTREAM_SIGNS)
+        upstream = upstream_metadata or any(sign in message for sign in _UPSTREAM_SIGNS)
         return "rate_limited_upstream" if upstream else "rate_limited_account"
     return _ERROR_FALLBACKS.get(status, "unknown")
 

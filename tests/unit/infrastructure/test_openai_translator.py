@@ -464,6 +464,12 @@ def provider_body(
     return {"error": {"message": message, "type": type_, "param": None, "code": code, **extra}}
 
 
+# Phrases that would change the value if they were read, in fields other than the message.
+ECHO = {
+    "raw": "not a valid model ID; invalid api key; insufficient credits; temporarily upstream",
+    "provider_name": "Mistral",
+}
+
 # Bodies as OpenAI and OpenRouter send them.
 PROVIDER_CASES = [
     pytest.param(
@@ -645,7 +651,7 @@ async def test_a_failed_answer_gets_a_fixed_provider_error(
 
 
 @pytest.mark.parametrize("status", [400, 401, 429, 500])
-async def test_a_body_that_is_not_json_is_still_classified_from_its_words(
+async def test_a_body_that_is_not_json_is_classified_from_its_status_only(
     fake: FakeTranslatorServer, translator: OpenAITranslator, status: int
 ) -> None:
     fake.enqueue(Fail(status))  # the fake's default body says nothing useful
@@ -657,7 +663,70 @@ async def test_a_body_that_is_not_json_is_still_classified_from_its_words(
     assert raised.value.provider_error == expected.get(status, "unknown")
 
 
-async def test_the_words_are_found_when_the_body_is_too_big_to_parse(
+@pytest.mark.parametrize(
+    ("status", "body", "expected"),
+    [
+        pytest.param(
+            400,
+            {"error": {"message": "Provider returned error", "code": 400, "metadata": ECHO}},
+            "invalid_request",
+            id="metadata",
+        ),
+        pytest.param(
+            400,
+            {"error": {"message": "Bad request", "code": 400}, "user_id": ECHO["raw"]},
+            "invalid_request",
+            id="sibling-field",
+        ),
+        pytest.param(
+            404,
+            {"error": {"message": "Not found", "param": ECHO["raw"]}},
+            "unknown",
+            id="param",
+        ),
+        pytest.param(
+            429,
+            {"error": {"message": "Slow down", "code": 429, "metadata": {"raw": ECHO["raw"]}}},
+            "rate_limited_account",
+            id="upstream-words-in-metadata",
+        ),
+    ],
+)
+async def test_a_phrase_outside_the_message_field_does_not_change_the_value(
+    fake: FakeTranslatorServer,
+    translator: OpenAITranslator,
+    status: int,
+    body: dict[str, Any],
+    expected: str,
+) -> None:
+    fake.enqueue(Fail(status, body=body))
+
+    with pytest.raises(ModelError) as raised:
+        await translator.translate(KOREAN, "en")
+
+    assert raised.value.provider_error == expected
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"message": "model not found"},
+        {"error": "model not found"},
+        {"error": {"message": "Model Not Found"}},
+    ],
+)
+async def test_the_message_is_read_from_the_shapes_providers_use(
+    fake: FakeTranslatorServer, translator: OpenAITranslator, body: dict[str, Any]
+) -> None:
+    fake.enqueue(Fail(400, body=body))
+
+    with pytest.raises(ModelError) as raised:
+        await translator.translate(KOREAN, "en")
+
+    assert raised.value.provider_error == "invalid_model"
+
+
+async def test_a_body_too_big_to_read_is_classified_from_its_status_only(
     fake: FakeTranslatorServer, translator: OpenAITranslator
 ) -> None:
     padding = "x" * 20_000
@@ -666,7 +735,7 @@ async def test_the_words_are_found_when_the_body_is_too_big_to_parse(
     with pytest.raises(ModelError) as raised:
         await translator.translate(KOREAN, "en")
 
-    assert raised.value.provider_error == "invalid_model"
+    assert raised.value.provider_error == "invalid_request"
 
 
 async def test_a_content_filtered_answer_with_status_200_is_content_filtered(
