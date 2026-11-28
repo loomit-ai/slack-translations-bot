@@ -1,5 +1,6 @@
 """ADR-008, LOG-01 to LOG-03 and MET-01 to MET-09: typed events, counters and the log guard."""
 
+import inspect
 import json
 import logging
 from collections.abc import Callable, Iterator
@@ -22,6 +23,7 @@ ALLOWED_FIELDS = {
     "attempt", "latency_ms", "input_chars", "prompt_tokens", "completion_tokens", "outcome",
     "error_category", "http_status", "slack_method", "slack_error", "drop_reason",
     "recipient_count", "exception_type", "refusal_reason", "logger", "channel_count", "author_kind",
+    "step",
 }  # fmt: skip
 
 # MET-01 to MET-09: the metric families the exposition must carry.
@@ -110,6 +112,13 @@ EVERY_METHOD: list[Callable[[LogTelemetry], None]] = [
     lambda t: t.startup_ready(),
     lambda t: t.startup_channel_not_member(channel_id="C0123ABCDE"),
     lambda t: t.shutdown(),
+    lambda t: t.trace(
+        "detection_decided", correlation_id="c1", entry="shortcut", channel_id="C0123ABCDE",
+        message_ts="1700000000.000100", thread_ts="1700000000.000050", slack_event_id="Ev1",
+        language="ko", script="Hans", confidence=0.9, attempt=2, latency_ms=12, input_chars=30,
+        outcome="hinted", error_category="timeout", refusal_reason="channel", recipient_count=3,
+        author_kind="outside", slack_method="response_url",
+    ),
     lambda t: t.startup_serving(channel_count=7),
     lambda t: t.channel_changed(change="joined", channel_id="C0123ABCDE", user_id="U1"),
     lambda t: t.channel_changed(change="left", channel_id="C0123ABCDE", user_id=None),
@@ -607,3 +616,96 @@ def test_a_child_logger_is_named_by_the_guarded_library() -> None:
     [event] = r.events
     assert event["logger"] == "slack_bolt"
     assert "MARKER-child-text" not in r.lines[0]
+
+
+TRACE_FIELDS = {
+    "correlation_id", "entry", "channel_id", "message_ts", "thread_ts", "slack_event_id",
+    "language", "script", "confidence", "attempt", "latency_ms", "input_chars", "outcome",
+    "error_category", "refusal_reason", "recipient_count", "author_kind", "slack_method",
+}  # fmt: skip
+
+
+class TestTrace:
+    """LOG-04 · One DEBUG event for the path a request took. Never a counter, never a person."""
+
+    def test_nothing_is_written_above_debug(self) -> None:
+        r = rig("INFO")
+        r.telemetry.trace("received", correlation_id="c1", entry="shortcut")
+        assert r.events == []
+
+    def test_at_debug_a_trace_is_one_debug_line_with_its_step_and_the_values_it_was_given(
+        self,
+    ) -> None:
+        r = rig("DEBUG")
+
+        r.telemetry.trace(
+            "detection_decided", correlation_id="c1", language="ko", confidence=0.93,
+            outcome="hinted", entry="shortcut",
+        )  # fmt: skip
+
+        [event] = r.events
+        assert (event["event"], event["level"]) == ("trace", "DEBUG")
+        assert event["step"] == "detection_decided"
+        assert (event["language"], event["confidence"], event["outcome"]) == ("ko", 0.93, "hinted")
+        assert event["correlation_id"] == "c1"
+
+    def test_values_that_were_not_given_are_left_out(self) -> None:
+        r = rig("DEBUG")
+        r.telemetry.trace("admitted", correlation_id="c1")
+        [event] = r.events
+        assert set(event) == {
+            "ts", "level", "event", "app_env", "version", "step", "correlation_id",
+        }  # fmt: skip
+
+    def test_a_trace_never_changes_a_counter(self) -> None:
+        r = rig("DEBUG")
+        before = generate_latest(r.telemetry.registry)
+        r.telemetry.trace(
+            "delivered_via", correlation_id="c1", outcome="ok", slack_method="response_url"
+        )
+        r.telemetry.trace(
+            "offers_selected", correlation_id="c1", recipient_count=3, author_kind="outside"
+        )
+        assert generate_latest(r.telemetry.registry) == before
+
+    def test_the_method_takes_exactly_the_allowed_fields_and_no_catch_all(self) -> None:
+        parameters = inspect.signature(LogTelemetry.trace).parameters
+        assert not any(p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values())
+        assert set(parameters) - {"self", "step"} == TRACE_FIELDS
+
+    @pytest.mark.parametrize(
+        ("step", "outcome"),
+        [
+            ("member_checked", "cache"), ("member_checked", "lookup"),
+            ("member_checked", "payload"),
+            ("channel_checked", "list"), ("source_read", "missing"),
+            ("detection_decided", "from_offer"), ("detection_decided", "no_offer"),
+            ("progress_shown", "skipped"), ("retry_note_shown", "failed"),
+            ("output_checked", "escaped"), ("delivered_via", "fallback_ok"),
+        ],
+    )  # fmt: skip
+    def test_each_step_accepts_its_own_outcomes(self, step: Any, outcome: str) -> None:
+        r = rig("DEBUG")
+        r.telemetry.trace(step, correlation_id="c1", outcome=outcome)
+        assert r.events[0]["outcome"] == outcome
+
+    @pytest.mark.parametrize(
+        ("step", "outcome"),
+        [
+            ("member_checked", "ok"), ("source_read", "cache"), ("output_checked", "ok"),
+            ("delivered_via", "cache"), ("received", "ok"), ("admitted", "lookup"),
+            ("detection_decided", "free text about a message"),
+        ],
+    )  # fmt: skip
+    def test_an_outcome_outside_a_steps_list_is_a_bug_and_raises(
+        self, step: Any, outcome: str
+    ) -> None:
+        r = rig("DEBUG")
+        with pytest.raises(ValueError, match="outcome"):
+            r.telemetry.trace(step, correlation_id="c1", outcome=outcome)
+        assert r.events == []
+
+    def test_identifiers_that_do_not_look_like_identifiers_are_dropped(self) -> None:
+        r = rig("DEBUG")
+        r.telemetry.trace("received", correlation_id="c1", channel_id="has a space and text")
+        assert "channel_id" not in r.events[0]

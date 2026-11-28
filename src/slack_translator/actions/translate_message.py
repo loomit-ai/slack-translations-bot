@@ -71,6 +71,8 @@ from slack_translator.domain.text import (
 # Room beyond TRANSLATOR_TIMEOUT before the action stops waiting for one attempt (REQ-10).
 ATTEMPT_MARGIN: Final = 3.0
 
+DeliveryRoute = Literal["response_url", "chat.postEphemeral"]
+
 # These requests come from a button on a private message, so their answers replace that message.
 REPLACES_ITS_MESSAGE: Final = ("retry", "offer")
 
@@ -152,6 +154,14 @@ class TranslateMessage:
         self._uniform = uniform
 
     async def run(self, request: TranslateRequest) -> None:
+        self._telemetry.trace(
+            "received",
+            correlation_id=request.correlation_id,
+            entry=request.entry,
+            channel_id=request.channel,
+            message_ts=request.ref.ts,
+            thread_ts=request.ref.thread_root_ts,
+        )
         if not await self._admit(request):
             return
         self._telemetry.translate_requested(
@@ -177,31 +187,81 @@ class TranslateMessage:
         Until the actor is confirmed as an X3M member, nothing is shown to them, whatever fails:
         an outsider gets no error and no Retry (decision 19).
         """
+        started = self._clock.now()
         try:
-            verdict = await self._membership(request)
+            verdict, source = await self._membership(request)
         except Exception as error:
             self._unexpected(request, error)
             self._refuse(request, "unverified")
             return False
+        self._telemetry.trace(
+            "member_checked",
+            correlation_id=request.correlation_id,
+            outcome=source,
+            latency_ms=self._milliseconds_since(started),
+            refusal_reason=None if verdict == "member" else verdict,
+        )
         if verdict != "member":
             self._refuse(request, verdict)
             return False
-        if not channel_is_allowed(request.channel, self._policy.allowlist) or not (
-            await self._served.is_served(request.channel)
-        ):
+
+        if not channel_is_allowed(request.channel, self._policy.allowlist):
+            self._telemetry.trace(
+                "channel_checked", correlation_id=request.correlation_id, outcome="list"
+            )
             self._refuse(request, "channel")
             await self._deliver(request, ChannelNotAllowed())
             return False
+        started = self._clock.now()
+        remembered = self._served.is_remembered(request.channel)
+        served = await self._served.is_served(request.channel)
+        self._telemetry.trace(
+            "channel_checked",
+            correlation_id=request.correlation_id,
+            outcome="cache" if remembered else "lookup",
+            latency_ms=self._milliseconds_since(started),
+        )
+        if not served:
+            self._refuse(request, "channel")
+            await self._deliver(request, ChannelNotAllowed())
+            return False
+        self._telemetry.trace("admitted", correlation_id=request.correlation_id)
         return True
+
+    def _milliseconds_since(self, started: float) -> int:
+        return max(0, round((self._clock.now() - started) * 1000))
 
     async def _run(self, request: TranslateRequest) -> None:
         text = request.text
         if text is None:
+            method = (
+                "conversations.replies" if request.ref.thread_root_ts else "conversations.history"
+            )
             source = await self._reader.fetch(request.ref)
             if source is None:
+                self._telemetry.trace(
+                    "source_read",
+                    correlation_id=request.correlation_id,
+                    outcome="missing",
+                    slack_method=method,
+                )
                 await self._finish(request, MessageUnavailable(), "message_unavailable", None, None)
                 return
             text = source.text
+            self._telemetry.trace(
+                "source_read",
+                correlation_id=request.correlation_id,
+                outcome="fetched",
+                input_chars=len(text),
+                slack_method=method,
+            )
+        else:
+            self._telemetry.trace(
+                "source_read",
+                correlation_id=request.correlation_id,
+                outcome="payload",
+                input_chars=len(text),
+            )
 
         cleaned = clean_for_detection(text)
         if letter_count(cleaned) < MIN_LETTERS:
@@ -211,6 +271,13 @@ class TranslateMessage:
         decision: ReadDecision
         if request.entry == "offer":
             decision = self._hint_from_offer(request)
+            self._telemetry.trace(
+                "detection_decided",
+                correlation_id=request.correlation_id,
+                outcome="from_offer",
+                language=request.language,
+                script=request.script,
+            )
         else:
             detection = await self._detect(request, cleaned)
             decision = decide_read(
@@ -218,6 +285,20 @@ class TranslateMessage:
                 self._policy.languages,
                 self._policy.read_language,
                 self._policy.min_confidence,
+            )
+            self._telemetry.trace(
+                "detection_decided",
+                correlation_id=request.correlation_id,
+                outcome=(
+                    "already_read"
+                    if isinstance(decision, AlreadyRead)
+                    else "hinted"
+                    if isinstance(decision, Hinted)
+                    else "unhinted"
+                ),
+                language=self._known_language(detection) if detection else None,
+                script=detection.script if detection else None,
+                confidence=detection.confidence if detection else None,
             )
             if isinstance(decision, AlreadyRead):
                 await self._finish(
@@ -233,15 +314,31 @@ class TranslateMessage:
         source_name = decision.name if isinstance(decision, Hinted) else None
 
         if request.entry in REPLACES_ITS_MESSAGE:
-            await self._deliver(request, Translating(), quiet=True)
+            route = await self._deliver(request, Translating(), quiet=True)
+            self._telemetry.trace(
+                "progress_shown",
+                correlation_id=request.correlation_id,
+                outcome="shown"
+                if route
+                else "skipped"
+                if request.response_url is None
+                else "failed",
+                slack_method=route,
+            )
 
         translated = await self._translate(request, text, hint)
         if translated is None:
             await self._finish(request, self._failure(request), "failed", None, None)
             return
 
+        shown = neutralize_controls(translated, source=text)
+        self._telemetry.trace(
+            "output_checked",
+            correlation_id=request.correlation_id,
+            outcome="unchanged" if shown == translated else "escaped",
+        )
         outcome = Translated(
-            text=neutralize_controls(translated, source=text),
+            text=shown,
             source_language=source_name,
             source_language_code=hint,
         )
@@ -257,7 +354,9 @@ class TranslateMessage:
             return Unhinted()
         return Hinted(code=language.code, name=language.name, script=request.script)
 
-    async def _membership(self, request: TranslateRequest) -> Literal["member"] | RefusalReason:
+    async def _membership(
+        self, request: TranslateRequest
+    ) -> tuple[Literal["member"] | RefusalReason, Literal["payload", "cache", "lookup"]]:
         """Look the person up, always (decision 23). The payload only allows an early "no".
 
         A click that names another workspace is refused without a lookup. Everything else asks
@@ -266,11 +365,12 @@ class TranslateMessage:
         """
         home = self._home.team_id
         if home is None:
-            return "unverified"
+            return "unverified", "payload"
         if request.team_id is not None and request.team_id != home:
-            return "workspace"
+            return "workspace", "payload"
+        source = "cache" if self._directory.is_cached(request.user_id) else "lookup"
         facts = await self._directory.user_facts(request.user_id)
-        return membership(facts, home, self._policy.member_email_domains)
+        return membership(facts, home, self._policy.member_email_domains), source
 
     async def _detect(self, request: TranslateRequest, cleaned: str) -> Detection | None:
         candidates = candidates_of(self._policy.languages)
@@ -331,7 +431,8 @@ class TranslateMessage:
         retry must not wait for Slack. The result waits for the note instead, so the note can
         never replace the result.
         """
-        note: asyncio.Future[bool] | None = None
+        note: asyncio.Future[None] | None = None
+        first_failure: str | None = None
         try:
             try:
                 return await self._attempt(text, hint)
@@ -339,9 +440,17 @@ class TranslateMessage:
                 pause = retry_pause(first, self._uniform)
                 if pause is None:
                     return None
+                first_failure = first.category.value
             if request.entry in REPLACES_ITS_MESSAGE:
-                note = asyncio.ensure_future(self._deliver(request, ErrorNotice(), quiet=True))
+                note = asyncio.ensure_future(self._show_retry_note(request))
             await self._clock.sleep(pause)
+            self._telemetry.trace(
+                "retry_waited",
+                correlation_id=request.correlation_id,
+                error_category=first_failure,
+                latency_ms=round(pause * 1000),
+                attempt=2,
+            )
             with attempt_scope(2):
                 return await self._attempt(text, hint)
         except ModelError:
@@ -349,6 +458,15 @@ class TranslateMessage:
         finally:
             if note is not None:
                 await asyncio.gather(note, return_exceptions=True)
+
+    async def _show_retry_note(self, request: TranslateRequest) -> None:
+        route = await self._deliver(request, ErrorNotice(), quiet=True)
+        self._telemetry.trace(
+            "retry_note_shown",
+            correlation_id=request.correlation_id,
+            outcome="shown" if route else "failed",
+            slack_method=route,
+        )
 
     async def _attempt(self, text: str, hint: LanguageCode | None) -> str:
         """One call. A call that outlives its deadline or answers nothing is a failed attempt."""
@@ -389,10 +507,16 @@ class TranslateMessage:
         target_language: str | None,
         language: str | None,
     ) -> None:
-        delivered = await self._deliver(request, outcome)
+        route = await self._deliver(request, outcome)
+        self._telemetry.trace(
+            "delivered_via",
+            correlation_id=request.correlation_id,
+            outcome="ok" if route == "response_url" else "fallback_ok" if route else "failed",
+            slack_method=route,
+        )
         self._telemetry.translate_completed(
             entry=request.entry,
-            outcome=result if delivered else "delivery_failed",
+            outcome=result if route else "delivery_failed",
             correlation_id=request.correlation_id,
             target_language=target_language,
             language=language,
@@ -400,13 +524,13 @@ class TranslateMessage:
 
     async def _deliver(
         self, request: TranslateRequest, outcome: ReadOutcome, *, quiet: bool = False
-    ) -> bool:
+    ) -> DeliveryRoute | None:
         """Response URL first; on any trouble, `chat.postEphemeral` to the same member (UI-17).
 
-        Returns whether the member was shown the message. When both ways fail nothing more is sent:
-        the failure is already counted by the gateway (MET-07), and a second message would only
-        hit the same broken transport. `quiet` is for the progress notes: if one cannot be
-        delivered the result still can.
+        Returns the way the member was shown the message, or `None`. When both ways fail nothing
+        more is sent: the failure is already counted by the gateway (MET-07), and a second message
+        would only hit the same broken transport. `quiet` is for the progress notes: if one cannot
+        be delivered the result still can.
         """
         message = self._presenter.present(outcome)
         mode: Literal["new", "replace"] = (
@@ -418,29 +542,35 @@ class TranslateMessage:
                 await self._responder.via_response_url(
                     request.response_url, message, mode, thread_ts
                 )
-                return True
+                return "response_url"
             except (ResponseUrlUnusable, SlackDeliveryError):
                 pass
             except Exception as error:
                 self._unexpected(request, error)
         if quiet:
-            return False
+            return None
         for attempt in (1, 2):
             try:
                 await self._responder.ephemeral(
                     request.channel, request.user_id, message, thread_ts
                 )
-                return True
+                return "chat.postEphemeral"
             except SlackDeliveryError as error:
                 wait = error.retry_after
                 if attempt == 1 and wait is not None and wait <= FALLBACK_RETRY_AFTER_LIMIT:
                     await self._clock.sleep(wait)
+                    self._telemetry.trace(
+                        "rate_limit_waited",
+                        correlation_id=request.correlation_id,
+                        slack_method="chat.postEphemeral",
+                        latency_ms=round(wait * 1000),
+                    )
                     continue
-                return False
+                return None
             except Exception as error:
                 self._unexpected(request, error)
-                return False
-        return False
+                return None
+        return None
 
     def _unexpected(self, request: TranslateRequest, error: Exception) -> None:
         self._telemetry.internal_error(

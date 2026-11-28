@@ -198,8 +198,8 @@ class Settings(BaseSettings):
     @field_validator("log_level")
     @classmethod
     def _debug_only_in_development(cls, value: str, info: ValidationInfo) -> str:
-        if value == "DEBUG" and info.data.get("app_env") != "development":
-            raise ValueError("DEBUG is accepted only when APP_ENV is development")
+        if value == "DEBUG" and info.data.get("app_env") not in ("development", "staging"):
+            raise ValueError("DEBUG is accepted only when APP_ENV is development or staging")
         return value
 
 

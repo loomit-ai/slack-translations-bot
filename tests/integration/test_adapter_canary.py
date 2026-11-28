@@ -11,6 +11,7 @@ import json
 import secrets
 from typing import Any
 
+import pytest
 from prometheus_client import generate_latest
 from slack_bolt.request.async_request import AsyncBoltRequest
 from tests.integration.conftest import SETTINGS
@@ -40,7 +41,8 @@ async def deliver(app: Application, payload: dict[str, Any]) -> None:
     await app.registry.drain()
 
 
-async def test_no_marker_reaches_a_log_line_or_a_counter() -> None:
+@pytest.mark.parametrize("log_level", ["INFO", "DEBUG"])
+async def test_no_marker_reaches_a_log_line_or_a_counter(log_level: str) -> None:
     source, translation, echoed, key = (
         marker("SOURCE"),
         marker("TRANSLATION"),
@@ -49,7 +51,9 @@ async def test_no_marker_reaches_a_log_line_or_a_counter() -> None:
     )
     text = f"{source} 파란 상자에 종이 별이 세 개 있어요."
     lines: list[str] = []
-    telemetry = LogTelemetry(app_env="development", version="0.1.0", sink=lines.append)
+    telemetry = LogTelemetry(
+        app_env="development", version="0.1.0", log_level=log_level, sink=lines.append
+    )
     slack = FakeSlackServer()
     await slack.start()
     slack.add_user(MEMBER)
@@ -123,3 +127,7 @@ async def test_no_marker_reaches_a_log_line_or_a_counter() -> None:
     assert 'outcome="invalid_response"' in exposition
     events = [json.loads(line) for line in lines]
     assert {e["attempt"] for e in events if e["event"] == "model.call"} == {1, 2}
+    traced = [e for e in events if e["event"] == "trace"]
+    assert bool(traced) == (log_level == "DEBUG"), "traces appear at DEBUG and only then"
+    for event in traced:
+        assert not {"user_id", "team_id", "exception_type", "logger"} & set(event)

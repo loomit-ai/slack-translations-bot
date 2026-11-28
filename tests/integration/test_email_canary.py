@@ -3,6 +3,7 @@
 import json
 from typing import Any
 
+import pytest
 from prometheus_client import generate_latest
 from slack_bolt.request.async_request import AsyncBoltRequest
 from tests.integration.conftest import SETTINGS
@@ -23,13 +24,16 @@ REFUSED = {
 MARKERS = ("canary-", "other-marker.example", "x3mads.com", "@")
 
 
-async def test_no_address_or_domain_appears_in_any_log_line_or_metric() -> None:
+@pytest.mark.parametrize("log_level", ["INFO", "DEBUG"])
+async def test_no_address_or_domain_appears_in_any_log_line_or_metric(log_level: str) -> None:
     slack = FakeSlackServer()
     await slack.start()
     slack.add_channel(CHANNEL)
     slack.users.update({"U0SERVED": SERVED, "U0REFUSED": REFUSED})
     lines: list[str] = []
-    telemetry = LogTelemetry(app_env="development", version="test", sink=lines.append)
+    telemetry = LogTelemetry(
+        app_env="development", version="test", log_level=log_level, sink=lines.append
+    )
     app = create_app(
         Settings.from_environ(SETTINGS),
         Overrides(
@@ -57,6 +61,7 @@ async def test_no_address_or_domain_appears_in_any_log_line_or_metric() -> None:
     refused = [event for event in events if event["event"] == "request.refused"]
     assert [event["refusal_reason"] for event in refused] == ["email_domain"]
     assert any(event["event"] == "translate.completed" for event in events)
+    assert any(event["event"] == "trace" for event in events) == (log_level == "DEBUG")
 
     everything = "\n".join(lines) + generate_latest(telemetry.registry).decode()
     for marker in MARKERS:

@@ -34,6 +34,22 @@ TranslateOutcome = Literal[
     "failed",
     "delivery_failed",
 ]
+TraceStep = Literal[
+    "received",
+    "member_checked",
+    "channel_checked",
+    "admitted",
+    "source_read",
+    "accepted",
+    "detection_decided",
+    "progress_shown",
+    "retry_waited",
+    "retry_note_shown",
+    "output_checked",
+    "delivered_via",
+    "offers_selected",
+    "rate_limit_waited",
+]
 OfferOutcome = Literal["sent", "failed", "expired"]
 # Who wrote the message an offer is about, for the 0.2 review of decision 1.
 AuthorKind = Literal["x3m_member", "outside", "unverified"]
@@ -101,6 +117,10 @@ class MemberDirectory(Protocol):
 
     async def user_facts(self, user_id: str) -> UserFacts | None: ...
 
+    def is_cached(self, user_id: str) -> bool:
+        """Whether `user_facts` would answer from memory. Only for the debug trace (LOG-04)."""
+        ...
+
     async def channel_members(self, channel_id: str) -> Sequence[str]: ...
 
 
@@ -125,6 +145,10 @@ class ServedChannels(Protocol):
     """
 
     async def is_served(self, channel_id: str) -> bool: ...
+
+    def is_remembered(self, channel_id: str) -> bool:
+        """Whether `is_served` would answer from memory. Only for the debug trace (LOG-04)."""
+        ...
 
     def note_event_from(self, channel_id: str) -> None: ...
 
@@ -159,6 +183,34 @@ class Telemetry(Protocol):
     def startup_channel_not_member(self, *, channel_id: str) -> None: ...
 
     def shutdown(self) -> None: ...
+
+    def trace(
+        self,
+        step: TraceStep,
+        *,
+        correlation_id: str | None = None,
+        entry: Entry | None = None,
+        channel_id: str | None = None,
+        message_ts: str | None = None,
+        thread_ts: str | None = None,
+        slack_event_id: str | None = None,
+        language: str | None = None,
+        script: str | None = None,
+        confidence: float | None = None,
+        attempt: int | None = None,
+        latency_ms: int | None = None,
+        input_chars: int | None = None,
+        outcome: str | None = None,
+        error_category: str | None = None,
+        refusal_reason: RefusalReason | None = None,
+        recipient_count: int | None = None,
+        author_kind: AuthorKind | None = None,
+        slack_method: str | None = None,
+    ) -> None:
+        """LOG-04: one step of a flow, written only at DEBUG. One named parameter per allowed
+        field and no catch-all: a person ID or a text cannot be passed in by mistake. Callers pass
+        only values they already hold. A trace never changes a counter."""
+        ...
 
     def startup_serving(self, *, channel_count: int) -> None: ...
 

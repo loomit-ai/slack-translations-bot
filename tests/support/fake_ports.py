@@ -116,6 +116,9 @@ class RecordingTelemetry:
     def shutdown(self) -> None:
         self._record("shutdown")
 
+    def trace(self, step: str, **fields: Any) -> None:
+        self._record("trace", step=step, **{k: v for k, v in fields.items() if v is not None})
+
     def startup_serving(self, **fields: Any) -> None:
         self._record("startup_serving", **fields)
 
@@ -168,6 +171,9 @@ class FakeDirectory:
         if self.listing_error is not None:
             raise self.listing_error
         return list(self.members)
+
+    def is_cached(self, user_id: str) -> bool:
+        return False
 
     async def user_facts(self, user_id: str) -> Any:
         self.lookups.append(user_id)

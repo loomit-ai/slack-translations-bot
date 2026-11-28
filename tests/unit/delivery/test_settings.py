@@ -211,9 +211,11 @@ class TestRuntimeSettings:
     def test_accepts_log_levels_in_every_environment(self, raw: str) -> None:
         assert build(APP_ENV="production", LOG_LEVEL=raw).log_level == raw
 
-    def test_debug_is_accepted_only_in_development(self) -> None:
-        assert build(APP_ENV="development", LOG_LEVEL="DEBUG").log_level == "DEBUG"
-        assert rejected_keys(APP_ENV="staging", LOG_LEVEL="DEBUG") == ["LOG_LEVEL"]
+    @pytest.mark.parametrize("env", ["development", "staging"])
+    def test_debug_is_accepted_in_development_and_staging(self, env: str) -> None:
+        assert build(APP_ENV=env, LOG_LEVEL="DEBUG").log_level == "DEBUG"
+
+    def test_debug_is_refused_in_production(self) -> None:
         assert rejected_keys(APP_ENV="production", LOG_LEVEL="DEBUG") == ["LOG_LEVEL"]
 
     def test_rejects_unknown_log_levels(self) -> None:

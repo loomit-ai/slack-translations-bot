@@ -64,6 +64,13 @@ class SendOffers:
         except Exception as error:
             self._unexpected(request, error)
 
+        self._telemetry.trace(
+            "offers_selected",
+            correlation_id=request.correlation_id,
+            recipient_count=len(recipients),
+            author_kind=author_kind,
+            language=request.language,
+        )
         outcomes = await self._offer_all(request, recipients)
         self._telemetry.offer_finished(
             correlation_id=request.correlation_id,
@@ -148,6 +155,12 @@ class SendOffers:
                 if now + wait >= deadline:
                     return "expired"
                 await self._clock.sleep(wait)
+                self._telemetry.trace(
+                    "rate_limit_waited",
+                    correlation_id=request.correlation_id,
+                    slack_method="chat.postEphemeral",
+                    latency_ms=round(wait * 1000),
+                )
                 continue
             try:
                 await self._responder.ephemeral(

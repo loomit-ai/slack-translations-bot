@@ -75,6 +75,14 @@ class ClassifyMessage:
 
     async def _run(self, event: MessageEvent, correlation_id: str) -> None:
         received_at = self._clock.now()
+        self._telemetry.trace(
+            "received",
+            correlation_id=correlation_id,
+            channel_id=event.channel,
+            message_ts=event.ts,
+            thread_ts=event.thread_root_ts,
+            slack_event_id=event.event_id,
+        )
         screened = screen(event, self._is_served)
         if isinstance(screened, Dropped):
             self._dropped(event, screened.reason)
@@ -82,6 +90,9 @@ class ClassifyMessage:
         if not self._seen.first_time(event.event_id or f"{event.channel}:{event.ts}"):
             self._dropped(event, "duplicate")
             return
+        self._telemetry.trace(
+            "accepted", correlation_id=correlation_id, input_chars=len(screened.cleaned_text)
+        )
 
         languages = self._policy.languages
         detection = await self._detect(screened.cleaned_text)
@@ -96,6 +107,14 @@ class ClassifyMessage:
         )
 
         target = customer_language(detection, languages, self._policy.min_confidence)
+        self._telemetry.trace(
+            "detection_decided",
+            correlation_id=correlation_id,
+            outcome="no_offer" if target is None or detection is None else "offer",
+            language=known_language(detection, languages),
+            script=detection.script if detection is not None else None,
+            confidence=detection.confidence if detection is not None else None,
+        )
         if target is None or detection is None:
             return
         await self._offers.send(

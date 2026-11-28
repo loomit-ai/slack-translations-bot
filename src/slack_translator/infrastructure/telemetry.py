@@ -14,12 +14,12 @@ import sys
 from collections.abc import Callable
 from datetime import UTC, datetime
 from math import isfinite
-from typing import Any, Final, Literal
+from typing import Any, Final, Literal, get_args
 
 from prometheus_client import CollectorRegistry, Counter, Histogram
 
 from slack_translator.domain.call_context import current_correlation_id
-from slack_translator.domain.errors import ErrorCategory, ModelCallRecord
+from slack_translator.domain.errors import ErrorCategory, ModelCallRecord, ModelErrorCategory
 from slack_translator.domain.languages import SUPPORTED_LANGUAGES
 from slack_translator.domain.ports import (
     AckKind,
@@ -29,6 +29,7 @@ from slack_translator.domain.ports import (
     Entry,
     RefusalReason,
     SlackCallOutcome,
+    TraceStep,
     TranslateOutcome,
 )
 
@@ -43,7 +44,7 @@ ALLOWED_LOG_FIELDS: Final = frozenset(
         "prompt_version", "attempt", "latency_ms", "input_chars", "prompt_tokens",
         "completion_tokens", "outcome", "error_category", "http_status", "slack_method",
         "slack_error", "drop_reason", "recipient_count", "exception_type", "refusal_reason",
-        "author_kind", "logger", "channel_count",
+        "author_kind", "logger", "channel_count", "step",
     }
 )  # fmt: skip
 
@@ -61,6 +62,22 @@ _SCRIPTS: Final = frozenset({"Hans", "Hant"})
 _MODEL_BUCKETS: Final = (0.01, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 20, 30, 60)
 _ACK_BUCKETS: Final = (0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 3, 5)
 
+# LOG-04: what a trace line may carry besides its step, and the outcomes each step may use.
+_TRACE_OUTCOMES: Final[dict[str, frozenset[str]]] = {
+    "member_checked": frozenset({"cache", "lookup", "payload"}),
+    "channel_checked": frozenset({"cache", "lookup", "list"}),
+    "source_read": frozenset({"payload", "fetched", "missing"}),
+    "detection_decided": frozenset(
+        {"already_read", "hinted", "unhinted", "from_offer", "offer", "no_offer"}
+    ),
+    "progress_shown": frozenset({"shown", "skipped", "failed"}),
+    "retry_note_shown": frozenset({"shown", "skipped", "failed"}),
+    "output_checked": frozenset({"unchanged", "escaped"}),
+    "delivered_via": frozenset({"ok", "fallback_ok", "failed"}),
+}
+_TRACE_STEPS: Final = frozenset(get_args(TraceStep))
+_ENTRIES: Final = frozenset({"shortcut", "offer", "retry"})
+_AUTHOR_KINDS: Final = frozenset({"x3m_member", "outside", "unverified"})
 _ERROR_CATEGORY_OF_REFUSAL: Final[dict[str, ErrorCategory]] = {
     "workspace": ErrorCategory.REFUSED_WORKSPACE,
     "guest": ErrorCategory.REFUSED_WORKSPACE,
@@ -68,6 +85,12 @@ _ERROR_CATEGORY_OF_REFUSAL: Final[dict[str, ErrorCategory]] = {
     "unverified": ErrorCategory.REFUSED_WORKSPACE,
     "channel": ErrorCategory.REFUSED_CHANNEL,
 }
+
+
+_REFUSAL_REASONS: Final = frozenset(_ERROR_CATEGORY_OF_REFUSAL)
+_ERROR_CATEGORIES: Final = frozenset(c.value for c in ErrorCategory) | frozenset(
+    c.value for c in ModelErrorCategory
+)
 
 
 def _stdout(line: str) -> None:
@@ -90,6 +113,10 @@ def _language(value: str | None) -> str:
 
 def _language_tag(value: str | None) -> str | None:
     return value if value is not None and _LANGUAGE_TAG.fullmatch(value) else None
+
+
+def _count(value: int | None) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
 
 
 def _confidence(value: float | None) -> float | None:
@@ -417,6 +444,62 @@ class LogTelemetry:
             else None,
             outcome=outcome,
             correlation_id=_identifier(correlation_id),
+        )
+
+    def trace(
+        self,
+        step: TraceStep,
+        *,
+        correlation_id: str | None = None,
+        entry: str | None = None,
+        channel_id: str | None = None,
+        message_ts: str | None = None,
+        thread_ts: str | None = None,
+        slack_event_id: str | None = None,
+        language: str | None = None,
+        script: str | None = None,
+        confidence: float | None = None,
+        attempt: int | None = None,
+        latency_ms: int | None = None,
+        input_chars: int | None = None,
+        outcome: str | None = None,
+        error_category: str | None = None,
+        refusal_reason: str | None = None,
+        recipient_count: int | None = None,
+        author_kind: str | None = None,
+        slack_method: str | None = None,
+    ) -> None:
+        """LOG-04. A step of a flow, at DEBUG only. It touches no counter. A step that is not in
+        the list, or an outcome that is not one of the step's own, is a bug and raises."""
+        if self._threshold > _LEVELS["DEBUG"]:
+            return
+        if step not in _TRACE_STEPS:
+            raise ValueError("not a trace step")
+        allowed = _TRACE_OUTCOMES.get(step, frozenset())
+        if outcome is not None and outcome not in allowed:
+            raise ValueError("an outcome that this trace step does not use")
+        self._emit(
+            "trace",
+            "DEBUG",
+            step=step,
+            correlation_id=_identifier(correlation_id),
+            entry=entry if entry in _ENTRIES else None,
+            channel_id=_identifier(channel_id),
+            message_ts=_identifier(message_ts),
+            thread_ts=_identifier(thread_ts),
+            slack_event_id=_identifier(slack_event_id),
+            language=_language(language) if language is not None else None,
+            script=script if script in _SCRIPTS else None,
+            confidence=_confidence(confidence),
+            attempt=_count(attempt),
+            latency_ms=_count(latency_ms),
+            input_chars=_count(input_chars),
+            outcome=outcome,
+            error_category=error_category if error_category in _ERROR_CATEGORIES else None,
+            refusal_reason=refusal_reason if refusal_reason in _REFUSAL_REASONS else None,
+            recipient_count=_count(recipient_count),
+            author_kind=author_kind if author_kind in _AUTHOR_KINDS else None,
+            slack_method=_identifier(slack_method),
         )
 
     def ack_observed(self, *, kind: AckKind, seconds: float) -> None:

@@ -15,6 +15,7 @@ import httpx
 from slack_sdk.errors import SlackApiError
 from slack_sdk.web.async_client import AsyncWebClient
 
+from slack_translator.domain.call_context import current_correlation_id
 from slack_translator.domain.errors import ResponseUrlUnusable, SlackDeliveryError
 from slack_translator.domain.messages import (
     MessageRef,
@@ -168,6 +169,14 @@ class SlackGateway:
                 return SourceMessage(ref=ref, text=item.get("text") or "", user_id=item.get("user"))
         return None
 
+    def is_cached(self, user_id: str) -> bool:
+        return self._users.get(user_id) is not None
+
+    def is_remembered(self, channel_id: str) -> bool:
+        return self._served_yes.get(channel_id) is not None or (
+            self._served_no.get(channel_id) is not None
+        )
+
     async def user_facts(self, user_id: str) -> UserFacts | None:
         cached = self._users.get(user_id)
         if cached is not None:
@@ -294,6 +303,12 @@ class SlackGateway:
                     ):
                         self._count(method, "rate_limited")
                         await self._clock.sleep(wait)
+                        self._telemetry.trace(
+                            "rate_limit_waited",
+                            correlation_id=current_correlation_id(),
+                            slack_method=method,
+                            latency_ms=round(wait * 1000),
+                        )
                         continue
                     self._count(method, "rate_limited", slack_error="ratelimited")
                 else:
@@ -309,7 +324,12 @@ class SlackGateway:
     def _count(
         self, method: str, outcome: SlackCallOutcome, slack_error: str | None = None
     ) -> None:
-        self._telemetry.slack_call(method=method, outcome=outcome, slack_error=slack_error)
+        self._telemetry.slack_call(
+            method=method,
+            outcome=outcome,
+            slack_error=slack_error,
+            correlation_id=current_correlation_id(),
+        )
 
     def _check_response_url(self, key: str) -> None:
         entry = self._url_use.get(key)
