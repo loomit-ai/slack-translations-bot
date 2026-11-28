@@ -20,6 +20,7 @@ dev = [
     "pyright>=1.1.400",
     "pytest>=8.3,<9",
     "pytest-asyncio>=0.25,<2",
+    "pytest-cov>=6,<8",
     "ruff>=0.9",
 ]
 
@@ -49,6 +50,16 @@ addopts = "--import-mode=importlib"
 pythonpath = ["."]
 asyncio_mode = "auto"
 markers = ["live: needs a real Slack app or provider credentials; not part of make test"]
+
+[tool.coverage.run]
+source = ["slack_translator"]
+branch = true
+
+[tool.coverage.report]
+# The floor `make coverage` enforces, in line and branch coverage together.
+fail_under = 90
+show_missing = true
+skip_covered = true
 
 [tool.importlinter]
 root_package = "slack_translator"

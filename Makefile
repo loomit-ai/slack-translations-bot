@@ -2,7 +2,7 @@
 UV ?= uv
 IMAGE ?= slack-translator:dev
 
-.PHONY: help install run dev test lint format typecheck imports guards check clean image fake-translator translate-one translate-file translation-page
+.PHONY: help install run dev test coverage lint format typecheck imports guards check clean image fake-translator translate-one translate-file translation-page
 
 help: ## Show this list
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*## "} {printf "  %-16s %s\n", $$1, $$2}'
@@ -35,10 +35,13 @@ imports: ## FF-01: layer order and where third-party libraries may be imported
 guards: ## FF-02: nothing under src/ can post publicly with the bot token
 	$(UV) run python scripts/check_no_public_posting.py src
 
-check: lint typecheck imports guards test ## Everything CI would run
+coverage: ## Tests with line and branch coverage; fails below the floor in pyproject.toml
+	$(UV) run pytest -m "not live" --cov
+
+check: lint typecheck imports guards coverage ## Everything CI would run, tests included
 
 clean: ## Remove caches and build output
-	rm -rf .pytest_cache .ruff_cache .import_linter_cache dist build
+	rm -rf .pytest_cache .ruff_cache .import_linter_cache .coverage htmlcov dist build
 	find . -name __pycache__ -type d -prune -not -path './.venv/*' -exec rm -rf {} +
 
 image: ## Build the container image
