@@ -209,7 +209,7 @@ class TestBoundary:
         await h.deliver_and_settle(shortcut(h, channel="C0OTHERXYZ"))
         assert h.classifier.calls == [] and h.translator.calls == []
         assert (
-            response_url_posts(h)[0]["text"] == "Loomit Translator is unavailable in this channel."
+            response_url_posts(h)[0]["text"] == "loomit Translator is unavailable in this channel."
         )
         assert [e.fields["reason"] for e in h.telemetry.named("request_refused")] == ["channel"]
         h.slack.assert_no_public_writes()
@@ -783,7 +783,7 @@ class TestMembership:
         assert [e.fields["reason"] for e in h.telemetry.named("request_refused")] == ["channel"]
         assert h.translator.calls == []
         assert response_url_posts(h)[0]["text"] == (
-            "Loomit Translator is unavailable in this channel."
+            "loomit Translator is unavailable in this channel."
         )
 
 
@@ -1117,7 +1117,7 @@ class TestOfferClick:
         h.app.served.forget(CHANNEL)
         await h.deliver_and_settle(self.offer(h))
         [post] = response_url_posts(h)
-        assert post["text"] == "Loomit Translator is unavailable in this channel."
+        assert post["text"] == "loomit Translator is unavailable in this channel."
         assert h.translator.calls == [] and h.slack.calls_of("conversations.history") == []
 
     async def test_a_tampered_offer_value_is_dropped_without_output(self, h: Harness) -> None:

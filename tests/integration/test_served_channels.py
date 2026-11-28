@@ -8,7 +8,7 @@ from tests.support.payloads import CHANNEL, MEMBER, TS, retry_payload, shortcut_
 
 NO_LIST = {"CHANNEL_ALLOWLIST": "", "APP_ENV": "production"}
 OTHER = "C0OTHERXYZ"
-UNAVAILABLE = "Loomit Translator is unavailable in this channel."
+UNAVAILABLE = "loomit Translator is unavailable in this channel."
 KOREAN = "파란 상자는 어디에 있나요?"
 
 

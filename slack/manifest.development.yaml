@@ -2,11 +2,11 @@ _metadata:
   major_version: 2
   minor_version: 1
 display_information:
-  name: Loomit Translator (dev)
+  name: loomit Translator (dev)
   description: Private translations for X3M staff. Development build.
 features:
   bot_user:
-    display_name: Loomit Translator (dev)
+    display_name: loomit Translator (dev)
     always_online: false
   shortcuts:
     - name: Translate this message

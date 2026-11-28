@@ -4,7 +4,7 @@ from typing import Literal
 
 from slack_translator.domain.messages import PrivateMessage
 
-APP_NAME = "Loomit Translator"  # also written in slack/manifest.*.yaml
+APP_NAME = "loomit Translator"  # also written in slack/manifest.*.yaml
 
 
 def _notice(sentence: str, kind: Literal["mrkdwn", "plain_text"] = "mrkdwn") -> PrivateMessage:
