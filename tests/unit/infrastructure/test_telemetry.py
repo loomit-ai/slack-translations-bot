@@ -21,7 +21,7 @@ ALLOWED_FIELDS = {
     "channel_id", "user_id", "message_ts", "thread_ts", "entry", "language", "script",
     "confidence", "target_language", "operation", "provider", "model", "prompt_version",
     "attempt", "latency_ms", "input_chars", "prompt_tokens", "completion_tokens", "outcome",
-    "error_category", "http_status", "slack_method", "slack_error", "drop_reason",
+    "error_category", "http_status", "slack_method", "slack_error", "drop_reason", "provider_error",
     "recipient_count", "exception_type", "refusal_reason", "logger", "channel_count", "author_kind",
     "step",
 }  # fmt: skip
@@ -424,6 +424,49 @@ def test_a_failed_model_call_is_a_warning_with_its_error_category() -> None:
     assert "prompt_tokens" not in event
 
 
+def test_a_failed_translate_call_names_the_provider_error_and_counts_it() -> None:
+    r = rig()
+
+    r.telemetry.model_call(
+        record(outcome="rejected", http_status=400, provider_error="invalid_model")
+    )
+    r.telemetry.model_call(record(outcome="timeout", http_status=None))
+
+    assert r.events[0]["provider_error"] == "invalid_model"
+    assert "provider_error" not in r.events[1]
+    labels = {"operation": "translate", "provider": "openrouter.ai", "model": "test-model"}
+    assert (
+        r.count(
+            "translator_model_calls_total",
+            **labels,
+            outcome="rejected",
+            provider_error="invalid_model",
+        )
+        == 1
+    )
+    assert (
+        r.count("translator_model_calls_total", **labels, outcome="timeout", provider_error="none")
+        == 1
+    )
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"provider_error": "sk-abc secret text"},
+        {"outcome": "ok", "provider_error": "invalid_model"},
+        {"operation": "detect", "outcome": "timeout", "provider_error": "invalid_model"},
+    ],
+)
+def test_a_provider_error_outside_its_rules_is_dropped(changes: dict[str, Any]) -> None:
+    r = rig()
+
+    r.telemetry.model_call(record(**{"outcome": "rejected", "http_status": 400, **changes}))
+
+    assert "provider_error" not in r.events[0]
+    assert "sk-abc" not in generate_latest(r.telemetry.registry).decode()
+
+
 def test_a_detection_call_names_no_prompt_version() -> None:
     r = rig()
 
@@ -447,8 +490,9 @@ def test_model_calls_feed_the_calls_latency_and_token_metrics() -> None:
     r.telemetry.model_call(record())
     r.telemetry.model_call(record(outcome="timeout", http_status=None, prompt_tokens=None))
 
-    assert r.count("translator_model_calls_total", **labels, outcome="ok") == 1
-    assert r.count("translator_model_calls_total", **labels, outcome="timeout") == 1
+    calls = {**labels, "provider_error": "none"}
+    assert r.count("translator_model_calls_total", **calls, outcome="ok") == 1
+    assert r.count("translator_model_calls_total", **calls, outcome="timeout") == 1
     assert r.count("translator_model_call_seconds_count", **labels, outcome="ok") == 1
     assert r.count("translator_model_call_seconds_sum", **labels, outcome="ok") == pytest.approx(
         0.84

@@ -1,10 +1,12 @@
 """IF-03 and IF-04 for the translator adapter, against the fake endpoint (TS-02)."""
 
 import asyncio
+import json
 import secrets
 from typing import Any
 
 import pytest
+from prometheus_client import generate_latest
 from pydantic import SecretStr
 from tests.support.fake_translator import (
     Answer,
@@ -18,9 +20,10 @@ from tests.support.fake_translator import (
 from tests.support.model_fakes import RecordingTelemetry, SteppingClock
 
 from slack_translator.domain.call_context import attempt_scope
-from slack_translator.domain.errors import ModelError, ModelErrorCategory
+from slack_translator.domain.errors import PROVIDER_ERRORS, ModelError, ModelErrorCategory
 from slack_translator.domain.languages import LanguageCode
 from slack_translator.infrastructure.openai_translator import PROMPT_VERSION, OpenAITranslator
+from slack_translator.infrastructure.telemetry import LogTelemetry
 
 KOREAN = "파란 상자에 종이 별이 세 개 있어요."
 SLACK_TEXT = (
@@ -453,3 +456,319 @@ async def test_cancelling_a_call_emits_no_record(
         await task
 
     assert recorder.records == []
+
+
+def provider_body(
+    message: str, code: str | int | None = None, type_: str | None = None, **extra: Any
+) -> dict[str, Any]:
+    return {"error": {"message": message, "type": type_, "param": None, "code": code, **extra}}
+
+
+# Bodies as OpenAI and OpenRouter send them.
+PROVIDER_CASES = [
+    pytest.param(
+        401,
+        provider_body(
+            "Incorrect API key provided: sk-abc***. You can find your API key at "
+            "https://platform.openai.com/account/api-keys.",
+            "invalid_api_key",
+            "invalid_request_error",
+        ),
+        "invalid_credentials",
+        id="openai-bad-key",
+    ),
+    pytest.param(
+        404,
+        provider_body(
+            "The model `gpt-5x` does not exist or you do not have access to it.",
+            "model_not_found",
+            "invalid_request_error",
+        ),
+        "invalid_model",
+        id="openai-unknown-model",
+    ),
+    pytest.param(
+        429,
+        provider_body(
+            "You exceeded your current quota, please check your plan and billing details.",
+            "insufficient_quota",
+            "insufficient_quota",
+        ),
+        "insufficient_credits",
+        id="openai-quota-is-a-429-but-not-a-rate-limit",
+    ),
+    pytest.param(
+        429,
+        provider_body(
+            "Rate limit reached for gpt-4o in organization org-x on requests per min (RPM): "
+            "Limit 3, Used 3, Requested 1.",
+            "rate_limit_exceeded",
+            "requests",
+        ),
+        "rate_limited_account",
+        id="openai-rate-limit",
+    ),
+    pytest.param(
+        400,
+        provider_body(
+            "This model's maximum context length is 8192 tokens. However, your messages "
+            "resulted in 9000 tokens.",
+            "context_length_exceeded",
+            "invalid_request_error",
+        ),
+        "context_too_long",
+        id="openai-context",
+    ),
+    pytest.param(
+        400,
+        provider_body(
+            "Your request was rejected as a result of our safety system.",
+            "content_policy_violation",
+            "invalid_request_error",
+        ),
+        "content_filtered",
+        id="openai-content-policy",
+    ),
+    pytest.param(
+        400,
+        provider_body("Unsupported parameter: 'temperature'.", "unsupported_parameter"),
+        "invalid_request",
+        id="openai-other-400",
+    ),
+    pytest.param(
+        400,
+        {
+            "error": {"message": "mistralai/ministral-8b-251 is not a valid model ID", "code": 400},
+            "user_id": "user_2abc",
+        },
+        "invalid_model",
+        id="openrouter-bad-model-id",
+    ),
+    pytest.param(
+        401,
+        {"error": {"message": "No auth credentials found", "code": 401}},
+        "invalid_credentials",
+        id="openrouter-no-key",
+    ),
+    pytest.param(
+        402,
+        {
+            "error": {
+                "message": "Insufficient credits. Add more using https://openrouter.ai/credits",
+                "code": 402,
+            }
+        },
+        "insufficient_credits",
+        id="openrouter-credits",
+    ),
+    pytest.param(
+        404,
+        {"error": {"message": "No endpoints found for mistralai/ministral-8b.", "code": 404}},
+        "no_endpoint",
+        id="openrouter-no-endpoint",
+    ),
+    pytest.param(
+        403,
+        {
+            "error": {
+                "message": "Your chosen model requires moderation and your input was flagged",
+                "code": 403,
+                "metadata": {"reasons": ["harassment"], "provider_name": "Mistral"},
+            }
+        },
+        "content_filtered",
+        id="openrouter-moderation",
+    ),
+    pytest.param(
+        429,
+        {
+            "error": {
+                "message": "Provider returned error",
+                "code": 429,
+                "metadata": {
+                    "raw": "mistralai/ministral-8b is temporarily rate-limited upstream.",
+                    "provider_name": "Mistral",
+                },
+            }
+        },
+        "rate_limited_upstream",
+        id="openrouter-upstream-rate-limit",
+    ),
+    pytest.param(
+        429,
+        {
+            "error": {
+                "message": "Rate limit exceeded: free-models-per-day. Add 10 credits to unlock "
+                "1000 free model requests per day",
+                "code": 429,
+            }
+        },
+        "rate_limited_account",
+        id="openrouter-account-rate-limit",
+    ),
+    pytest.param(
+        400,
+        {"error": {"message": "Provider returned error", "code": 400}},
+        "invalid_request",
+        id="openrouter-other-400",
+    ),
+    pytest.param(
+        422, {"detail": "unprocessable"}, "invalid_request", id="422-without-an-error-object"
+    ),
+    pytest.param(413, {"error": {"message": "Payload too large"}}, "context_too_long", id="413"),
+    pytest.param(403, {"error": {"message": "Forbidden"}}, "unknown", id="403-nothing-matches"),
+    pytest.param(500, {"error": {"message": "boom"}}, "unknown", id="5xx-nothing-matches"),
+    pytest.param(
+        400, {"error": {"message": "x", "code": ["not", "a", "string"]}}, "invalid_request",
+        id="odd-code-shape",
+    ),
+]  # fmt: skip
+
+
+@pytest.mark.parametrize(("status", "body", "expected"), PROVIDER_CASES)
+async def test_a_failed_answer_gets_a_fixed_provider_error(
+    fake: FakeTranslatorServer,
+    translator: OpenAITranslator,
+    recorder: RecordingTelemetry,
+    status: int,
+    body: dict[str, Any],
+    expected: str,
+) -> None:
+    fake.enqueue(Fail(status, body=body))
+
+    with pytest.raises(ModelError) as raised:
+        await translator.translate(KOREAN, "en")
+
+    assert raised.value.provider_error == expected
+    assert recorder.records[0].provider_error == expected
+    assert expected in PROVIDER_ERRORS
+
+
+@pytest.mark.parametrize("status", [400, 401, 429, 500])
+async def test_a_body_that_is_not_json_is_still_classified_from_its_words(
+    fake: FakeTranslatorServer, translator: OpenAITranslator, status: int
+) -> None:
+    fake.enqueue(Fail(status))  # the fake's default body says nothing useful
+
+    with pytest.raises(ModelError) as raised:
+        await translator.translate(KOREAN, "en")
+
+    expected = {400: "invalid_request", 401: "invalid_credentials", 429: "rate_limited_account"}
+    assert raised.value.provider_error == expected.get(status, "unknown")
+
+
+async def test_the_words_are_found_when_the_body_is_too_big_to_parse(
+    fake: FakeTranslatorServer, translator: OpenAITranslator
+) -> None:
+    padding = "x" * 20_000
+    fake.enqueue(Fail(400, body=provider_body("model not found", extra_padding=padding)))
+
+    with pytest.raises(ModelError) as raised:
+        await translator.translate(KOREAN, "en")
+
+    assert raised.value.provider_error == "invalid_model"
+
+
+async def test_a_content_filtered_answer_with_status_200_is_content_filtered(
+    fake: FakeTranslatorServer, translator: OpenAITranslator, recorder: RecordingTelemetry
+) -> None:
+    fake.enqueue(Malformed("content_filter"))
+
+    with pytest.raises(ModelError) as raised:
+        await translator.translate(KOREAN, "en")
+
+    assert raised.value.category is ModelErrorCategory.INVALID_RESPONSE
+    assert raised.value.provider_error == "content_filtered"
+    assert recorder.records[0].provider_error == "content_filtered"
+
+
+@pytest.mark.parametrize("kind", ["not_json", "empty_content", "truncated"])
+async def test_other_unusable_200_answers_are_unknown(
+    fake: FakeTranslatorServer, translator: OpenAITranslator, kind: MalformedKind
+) -> None:
+    fake.enqueue(Malformed(kind))
+
+    with pytest.raises(ModelError) as raised:
+        await translator.translate(KOREAN, "en")
+
+    assert raised.value.provider_error == "unknown"
+
+
+async def test_the_reason_changes_neither_the_category_nor_the_retry_hint(
+    fake: FakeTranslatorServer, translator: OpenAITranslator
+) -> None:
+    fake.enqueue(Fail(429, retry_after="4", body=provider_body("Rate limit reached", "x")))
+
+    with pytest.raises(ModelError) as raised:
+        await translator.translate(KOREAN, "en")
+
+    assert raised.value.category is ModelErrorCategory.RATE_LIMITED
+    assert raised.value.retry_after == 4.0
+    assert raised.value.provider_error == "rate_limited_account"
+
+
+async def test_no_provider_error_without_an_answer_and_none_on_success(
+    fake: FakeTranslatorServer,
+    clock: SteppingClock,
+    recorder: RecordingTelemetry,
+    api_key: str,
+) -> None:
+    adapter = make_translator(fake, clock, recorder, api_key, timeout=0.3)
+    try:
+        fake.enqueue(Hang(), Drop(), Answer("fine"))
+        for _ in range(2):
+            with pytest.raises(ModelError) as raised:
+                await adapter.translate(KOREAN, "en")
+            assert raised.value.provider_error is None
+        await adapter.translate(KOREAN, "en")
+    finally:
+        await adapter.aclose()
+
+    assert [record.provider_error for record in recorder.records] == [None, None, None]
+
+
+async def test_nothing_from_a_provider_body_leaves_the_parser(
+    fake: FakeTranslatorServer,
+    clock: SteppingClock,
+    api_key: str,
+) -> None:
+    echoed = f"ECHOED-{secrets.token_hex(8)}"
+    lines: list[str] = []
+    telemetry = LogTelemetry(
+        app_env="development", version="0.1.0", log_level="DEBUG", sink=lines.append
+    )
+    adapter = OpenAITranslator(
+        base_url=fake.base_url,
+        model="test-model",
+        api_key=SecretStr(api_key),
+        timeout=2.0,
+        telemetry=telemetry,
+        clock=clock,
+    )
+    body = {
+        "error": {
+            "message": f"{echoed}: {{{{SOURCE}}}} is not a valid model ID",
+            "type": echoed,
+            "code": echoed,
+            "metadata": {"raw": echoed, "provider_name": echoed},
+        },
+        "user_id": echoed,
+    }
+    try:
+        fake.enqueue(Fail(400, body=body))
+        with pytest.raises(ModelError) as raised:
+            await adapter.translate(f"{echoed} {KOREAN}", "en")
+    finally:
+        await adapter.aclose()
+
+    error = raised.value
+    assert error.provider_error == "invalid_model"
+    assert error.__cause__ is None
+    assert error.__context__ is None
+    seen = [str(error), repr(error), repr(error.args), repr(vars(error))]
+    assert all(echoed not in item for item in seen)
+    exposition = generate_latest(telemetry.registry).decode()
+    everything = "\n".join([*lines, exposition])
+    assert echoed not in everything
+    assert 'provider_error="invalid_model"' in exposition
+    assert json.loads(lines[-1])["provider_error"] == "invalid_model"

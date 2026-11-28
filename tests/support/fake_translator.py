@@ -83,6 +83,7 @@ class Fail:
     retry_after: str | float | None = None
     delay: float = 0.0
     echo_input: bool = False
+    body: dict[str, Any] | None = None  # the whole JSON answer, for realistic provider bodies
 
 
 MalformedKind = Literal[
@@ -236,6 +237,15 @@ class FakeTranslatorServer:
                 headers = {}
                 if behavior.retry_after is not None:
                     headers["Retry-After"] = str(behavior.retry_after)
+                if behavior.body is not None:
+                    answer = json.dumps(behavior.body)
+                    answer = answer.replace("{{SOURCE}}", json.dumps(recorded.user_text)[1:-1])
+                    return web.Response(
+                        text=answer,
+                        status=behavior.status,
+                        headers=headers,
+                        content_type="application/json",
+                    )
                 return web.json_response(
                     {"error": {"message": message, "type": "fake_error", "code": behavior.status}},
                     status=behavior.status,

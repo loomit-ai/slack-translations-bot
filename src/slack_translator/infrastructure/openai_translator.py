@@ -6,6 +6,7 @@ failure is one `ModelError` with a fixed sentence, and one `ModelCallRecord` goe
 """
 
 import asyncio
+import json
 import math
 import re
 from collections.abc import Mapping
@@ -20,7 +21,12 @@ import httpx
 from pydantic import SecretStr
 
 from slack_translator.domain.call_context import current_attempt
-from slack_translator.domain.errors import ModelCallRecord, ModelError, ModelErrorCategory
+from slack_translator.domain.errors import (
+    ModelCallRecord,
+    ModelError,
+    ModelErrorCategory,
+    ProviderError,
+)
 from slack_translator.domain.languages import SUPPORTED_LANGUAGES, LanguageCode
 from slack_translator.domain.ports import Clock, Telemetry
 
@@ -52,6 +58,78 @@ _SCRIPT_WORDS: Final = {"Hans": "Simplified", "Hant": "Traditional"}
 
 # A provider flag that says the answer is not the whole, clean translation.
 _INCOMPLETE_FINISH_REASONS: Final = frozenset({"length", "content_filter", "error"})
+
+# Why the provider turned a request down. Only the enum value leaves `_provider_error`: not the
+# message, the body, the metadata, or the provider's own code and type words. Providers echo the
+# request in error bodies, so nothing from the body is kept, logged or chained.
+_ERROR_BODY_LIMIT: Final = 16 * 1024
+
+# Short code and type words from the provider's error object. First match wins.
+_ERROR_IDENTIFIERS: Final[Mapping[str, ProviderError]] = {
+    "model_not_found": "invalid_model",
+    "invalid_api_key": "invalid_credentials",
+    "authentication_error": "invalid_credentials",
+    "insufficient_quota": "insufficient_credits",
+    "billing_hard_limit_reached": "insufficient_credits",
+    "context_length_exceeded": "context_too_long",
+    "string_above_max_length": "context_too_long",
+    "content_filter": "content_filtered",
+    "content_policy_violation": "content_filtered",
+}
+
+# Statuses that mean one thing for both providers.
+_ERROR_STATUSES: Final[Mapping[int, ProviderError]] = {
+    401: "invalid_credentials",
+    402: "insufficient_credits",
+    413: "context_too_long",
+}
+
+# Fixed phrases, searched in the lower-cased body as plain text. First match wins.
+_ERROR_PHRASES: Final[tuple[tuple[ProviderError, tuple[str, ...]], ...]] = (
+    ("invalid_model", ("not a valid model", "model not found", "unknown model", "invalid model",
+                       "does not exist or you do not have access")),
+    ("invalid_credentials", ("invalid api key", "incorrect api key", "no auth credentials",
+                             "unauthorized", "user not found")),
+    ("insufficient_credits", ("insufficient credits", "exceeded your current quota",
+                              "requires more credits", "can only afford")),
+    ("no_endpoint", ("no endpoints found", "no allowed providers", "no available provider")),
+    ("context_too_long", ("context length", "maximum context", "too many tokens",
+                          "prompt is too long")),
+    ("content_filtered", ("content filter", "content policy", "moderation", "flagged")),
+)  # fmt: skip
+
+_UPSTREAM_SIGNS: Final = ("upstream", "provider returned error", "provider_name", "temporarily")
+
+_ERROR_FALLBACKS: Final[Mapping[int, ProviderError]] = {
+    400: "invalid_request",
+    422: "invalid_request",
+}
+
+
+def _provider_error(response: httpx.Response) -> ProviderError:
+    """The fixed reason for a failed answer. Everything else in the body is discarded here."""
+    content = response.content[:_ERROR_BODY_LIMIT]
+    status = response.status_code
+    text = content.decode("utf-8", errors="ignore").lower()
+    if len(response.content) <= _ERROR_BODY_LIMIT:
+        try:
+            parsed = _as_object(json.loads(content))
+        except ValueError:
+            parsed = None
+        error = _as_object(parsed.get("error")) if parsed is not None else None
+        for key in ("code", "type"):
+            word = error.get(key) if error is not None else None
+            if isinstance(word, str) and word.lower() in _ERROR_IDENTIFIERS:
+                return _ERROR_IDENTIFIERS[word.lower()]
+    if status in _ERROR_STATUSES:
+        return _ERROR_STATUSES[status]
+    for reason, phrases in _ERROR_PHRASES:
+        if any(phrase in text for phrase in phrases):
+            return reason
+    if status == 429:
+        upstream = any(sign in text for sign in _UPSTREAM_SIGNS)
+        return "rate_limited_upstream" if upstream else "rate_limited_account"
+    return _ERROR_FALLBACKS.get(status, "unknown")
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,6 +178,21 @@ def _token_count(usage: Mapping[str, Any] | None, key: str) -> int | None:
     if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
         return value
     return None
+
+
+def _was_content_filtered(response: httpx.Response) -> bool:
+    """True when a 2xx answer says the provider filtered the content."""
+    if not 200 <= response.status_code < 300:
+        return False
+    try:
+        payload = _as_object(response.json())
+    except ValueError:
+        return False
+    choices = payload.get("choices") if payload is not None else None
+    if not isinstance(choices, list) or not choices:
+        return False
+    choice = _as_object(cast(list[object], choices)[0])
+    return choice is not None and choice.get("finish_reason") == "content_filter"
 
 
 def _read_reply(response: httpx.Response) -> _Reply | None:
@@ -200,7 +293,14 @@ class OpenAITranslator:
         try:
             reply = await self._exchange(body)
         except ModelError as error:
-            self._record(text, attempt, started, error.category.value, error.http_status)
+            self._record(
+                text,
+                attempt,
+                started,
+                error.category.value,
+                error.http_status,
+                provider_error=error.provider_error,
+            )
             raise
         self._record(
             text,
@@ -250,19 +350,43 @@ class OpenAITranslator:
         status = response.status_code
         retry_after = _parse_retry_after(response.headers.get("retry-after"))
         if status == 429:
-            raise ModelError(ModelErrorCategory.RATE_LIMITED, "translate", status, retry_after)
+            raise ModelError(
+                ModelErrorCategory.RATE_LIMITED,
+                "translate",
+                status,
+                retry_after,
+                _provider_error(response),
+            )
         if status >= 500:
-            raise ModelError(ModelErrorCategory.UNAVAILABLE, "translate", status, retry_after)
+            raise ModelError(
+                ModelErrorCategory.UNAVAILABLE,
+                "translate",
+                status,
+                retry_after,
+                _provider_error(response),
+            )
         if 400 <= status < 500:
-            raise ModelError(ModelErrorCategory.REJECTED, "translate", status)
+            raise ModelError(
+                ModelErrorCategory.REJECTED,
+                "translate",
+                status,
+                provider_error=_provider_error(response),
+            )
+        filtered = False
         try:
             reply = _read_reply(response) if 200 <= status < 300 else None
+            filtered = reply is None and _was_content_filtered(response)
         except (TypeError, ValueError, AttributeError, KeyError, IndexError):
             # Whatever shape the provider sends, an unreadable answer is an invalid response,
             # so the one retry applies instead of an unexpected exception escaping.
             reply = None
         if reply is None:
-            raise ModelError(ModelErrorCategory.INVALID_RESPONSE, "translate", status)
+            raise ModelError(
+                ModelErrorCategory.INVALID_RESPONSE,
+                "translate",
+                status,
+                provider_error="content_filtered" if filtered else "unknown",
+            )
         return reply
 
     def _record(
@@ -274,6 +398,7 @@ class OpenAITranslator:
         status: int | None,
         prompt_tokens: int | None = None,
         completion_tokens: int | None = None,
+        provider_error: ProviderError | None = None,
     ) -> None:
         self._telemetry.model_call(
             ModelCallRecord(
@@ -288,5 +413,6 @@ class OpenAITranslator:
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
                 prompt_version=PROMPT_VERSION,
+                provider_error=provider_error,
             )
         )

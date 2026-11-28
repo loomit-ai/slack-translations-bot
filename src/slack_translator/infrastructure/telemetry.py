@@ -19,7 +19,12 @@ from typing import Any, Final, Literal, get_args
 from prometheus_client import CollectorRegistry, Counter, Histogram
 
 from slack_translator.domain.call_context import current_correlation_id
-from slack_translator.domain.errors import ErrorCategory, ModelCallRecord, ModelErrorCategory
+from slack_translator.domain.errors import (
+    PROVIDER_ERRORS,
+    ErrorCategory,
+    ModelCallRecord,
+    ModelErrorCategory,
+)
 from slack_translator.domain.languages import SUPPORTED_LANGUAGES
 from slack_translator.domain.ports import (
     AckKind,
@@ -44,7 +49,7 @@ ALLOWED_LOG_FIELDS: Final = frozenset(
         "prompt_version", "attempt", "latency_ms", "input_chars", "prompt_tokens",
         "completion_tokens", "outcome", "error_category", "http_status", "slack_method",
         "slack_error", "drop_reason", "recipient_count", "exception_type", "refusal_reason",
-        "author_kind", "logger", "channel_count", "step",
+        "author_kind", "logger", "channel_count", "step", "provider_error",
     }
 )  # fmt: skip
 
@@ -173,7 +178,10 @@ class LogTelemetry:
             registry=reg,
         )
         self._model_calls = Counter(
-            "translator_model_calls_total", "Model calls", call_labels, registry=reg
+            "translator_model_calls_total",
+            "Model calls",
+            [*call_labels, "provider_error"],
+            registry=reg,
         )
         self._model_seconds = Histogram(
             "translator_model_call_seconds",
@@ -374,7 +382,12 @@ class LogTelemetry:
 
     def model_call(self, record: ModelCallRecord, *, correlation_id: str | None = None) -> None:
         labels = (record.operation, record.provider, record.model, record.outcome)
-        self._model_calls.labels(*labels).inc()
+        failed = record.outcome != "ok"
+        reportable = failed and record.operation == "translate"
+        provider_error = record.provider_error if reportable else None
+        if provider_error not in PROVIDER_ERRORS:
+            provider_error = None
+        self._model_calls.labels(*labels, provider_error or "none").inc()
         self._model_seconds.labels(*labels).observe(max(record.latency_ms, 0) / 1000)
         for kind, tokens in (
             ("prompt", record.prompt_tokens),
@@ -383,7 +396,6 @@ class LogTelemetry:
             if tokens is not None and tokens >= 0:
                 self._model_tokens.labels(*labels, kind).inc(tokens)
 
-        failed = record.outcome != "ok"
         self._emit(
             "model.call",
             "WARNING" if failed else "INFO",
@@ -400,6 +412,7 @@ class LogTelemetry:
             http_status=record.http_status,
             correlation_id=_identifier(correlation_id or current_correlation_id()),
             prompt_version=record.prompt_version,
+            provider_error=provider_error,
         )
 
     def translate_completed(

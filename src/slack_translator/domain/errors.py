@@ -2,9 +2,25 @@
 
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Literal
+from typing import Literal, get_args
 
 Operation = Literal["detect", "translate"]
+
+# Why a provider turned a translate request down, from a fixed list. It is derived by the
+# translator adapter and is the only part of the provider's error answer that leaves it.
+ProviderError = Literal[
+    "invalid_model",
+    "invalid_credentials",
+    "insufficient_credits",
+    "no_endpoint",
+    "context_too_long",
+    "content_filtered",
+    "invalid_request",
+    "rate_limited_account",
+    "rate_limited_upstream",
+    "unknown",
+]
+PROVIDER_ERRORS: frozenset[str] = frozenset(get_args(ProviderError))
 
 
 class ErrorCategory(StrEnum):
@@ -60,12 +76,14 @@ class ModelError(Exception):
         operation: Operation,
         http_status: int | None = None,
         retry_after: float | None = None,
+        provider_error: ProviderError | None = None,
     ) -> None:
         super().__init__(_MODEL_ERROR_SENTENCES[category])
         self.category = category
         self.operation = operation
         self.http_status = http_status
         self.retry_after = retry_after
+        self.provider_error: ProviderError | None = provider_error
 
     @property
     def retryable(self) -> bool:
@@ -85,6 +103,7 @@ class ModelCallRecord:
     prompt_tokens: int | None
     completion_tokens: int | None
     prompt_version: str | None = None  # set by the adapter that owns the prompt (CR-06)
+    provider_error: ProviderError | None = None  # failed translate calls that got an answer
 
 
 class ResponseUrlUnusable(Exception):

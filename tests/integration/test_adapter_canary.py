@@ -105,6 +105,21 @@ async def test_no_marker_reaches_a_log_line_or_a_counter(log_level: str) -> None
             fake.enqueue(Malformed("truncated"), Malformed("empty_content"))
             await shortcut(text)
 
+            fake.enqueue(  # OpenRouter shape: the text rides in the message and in metadata
+                Fail(
+                    400,
+                    body={
+                        "error": {
+                            "message": f"{{{{SOURCE}}}} {echoed} is not a valid model ID",
+                            "code": 400,
+                            "metadata": {"raw": "{{SOURCE}}", "provider_name": echoed},
+                        },
+                        "user_id": echoed,
+                    },
+                )
+            )
+            await shortcut(text)
+
             fake.set_default(Fail(500, echo_input=True))  # an echo of the marker in the body
             await shortcut(f"{echoed} {text}")
             fake.set_default(Answer(translation))
@@ -125,8 +140,13 @@ async def test_no_marker_reaches_a_log_line_or_a_counter(log_level: str) -> None
     assert len(lines) >= 20
     assert 'outcome="timeout"' in exposition
     assert 'outcome="invalid_response"' in exposition
+    assert 'provider_error="invalid_model"' in exposition
+    assert 'provider_error="none"' in exposition
     events = [json.loads(line) for line in lines]
     assert {e["attempt"] for e in events if e["event"] == "model.call"} == {1, 2}
+    calls = [e for e in events if e["event"] == "model.call"]
+    reasons = {e["provider_error"] for e in calls if "provider_error" in e}
+    assert reasons >= {"invalid_model", "invalid_credentials", "unknown"}
     traced = [e for e in events if e["event"] == "trace"]
     assert bool(traced) == (log_level == "DEBUG"), "traces appear at DEBUG and only then"
     for event in traced:
