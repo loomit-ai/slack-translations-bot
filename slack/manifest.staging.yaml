@@ -1,0 +1,38 @@
+_metadata:
+  major_version: 2
+  minor_version: 1
+display_information:
+  name: loomit Translator (staging)
+  description: Private translations for X3M staff. Staging build.
+features:
+  bot_user:
+    display_name: loomit Translator (staging)
+    always_online: false
+  shortcuts:
+    - name: Translate this message
+      type: message
+      callback_id: translate_message
+      description: Shows you a private translation of this message.
+oauth_config:
+  scopes:
+    bot:
+      - commands # the message shortcut
+      - chat:write # chat.postEphemeral fallback
+      - channels:history # Retry and offer clicks fetch the message
+      - groups:history
+      - channels:read # startup membership check; member list in 0.2
+      - groups:read
+      - users:read # home-workspace check; recipients in 0.2
+      - users:read.email # decision 23: the email domain decides who is a member
+settings:
+  event_subscriptions: # [0.2] intake of customer messages (FLOW-02)
+    bot_events:
+      - message.channels
+      - message.groups
+      - member_joined_channel # CR-11: audit line when the bot is added to a channel
+      - member_left_channel
+  interactivity:
+    is_enabled: true
+  org_deploy_enabled: false
+  socket_mode_enabled: true
+  token_rotation_enabled: false
