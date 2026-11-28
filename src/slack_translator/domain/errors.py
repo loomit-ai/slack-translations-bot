@@ -18,6 +18,7 @@ ProviderError = Literal[
     "invalid_request",
     "rate_limited_account",
     "rate_limited_upstream",
+    "upstream_failed",
     "unknown",
 ]
 PROVIDER_ERRORS: frozenset[str] = frozenset(get_args(ProviderError))

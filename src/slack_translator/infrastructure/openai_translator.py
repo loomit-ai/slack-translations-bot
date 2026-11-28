@@ -142,8 +142,8 @@ def _provider_error(response: httpx.Response) -> ProviderError:
     upstream = upstream_metadata or any(sign in message for sign in _UPSTREAM_SIGNS)
     if status == 429:
         return "rate_limited_upstream" if upstream else "rate_limited_account"
-    if status == 502 and upstream:
-        return "rate_limited_upstream"
+    if status in (502, 503) and upstream:
+        return "upstream_failed"
     return _ERROR_FALLBACKS.get(status, "unknown")
 
 

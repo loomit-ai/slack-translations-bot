@@ -594,8 +594,26 @@ PROVIDER_CASES = [
                 "metadata": {"raw": "upstream limit", "provider_name": "Mistral"},
             }
         },
-        "rate_limited_upstream",
+        "upstream_failed",
         id="openrouter-502-upstream",
+    ),
+    pytest.param(
+        503,
+        {"error": {"message": "Provider returned error", "code": 503}},
+        "upstream_failed",
+        id="503-names-the-upstream-in-the-message",
+    ),
+    pytest.param(
+        503,
+        {"error": {"message": "Service unavailable", "code": 503}},
+        "unknown",
+        id="503-without-an-upstream-sign",
+    ),
+    pytest.param(
+        500,
+        {"error": {"message": "Provider returned error", "code": 500}},
+        "unknown",
+        id="500-is-not-an-upstream-failure",
     ),
     pytest.param(
         502,
