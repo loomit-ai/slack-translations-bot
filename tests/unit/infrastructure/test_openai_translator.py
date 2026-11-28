@@ -574,6 +574,36 @@ PROVIDER_CASES = [
         id="openrouter-no-endpoint",
     ),
     pytest.param(
+        404,
+        {
+            "error": {
+                "message": "0 endpoints out of 1 requested are available matching your "
+                "guardrail restrictions and data policy",
+                "code": 404,
+            }
+        },
+        "no_endpoint",
+        id="openrouter-guardrail-no-endpoint",
+    ),
+    pytest.param(
+        502,
+        {
+            "error": {
+                "message": "Provider returned error",
+                "code": 502,
+                "metadata": {"raw": "upstream limit", "provider_name": "Mistral"},
+            }
+        },
+        "rate_limited_upstream",
+        id="openrouter-502-upstream",
+    ),
+    pytest.param(
+        502,
+        {"error": {"message": "Bad gateway", "code": 502}},
+        "unknown",
+        id="502-without-an-upstream-sign",
+    ),
+    pytest.param(
         403,
         {
             "error": {

@@ -92,7 +92,8 @@ _ERROR_PHRASES: Final[tuple[tuple[ProviderError, tuple[str, ...]], ...]] = (
                              "unauthorized", "user not found")),
     ("insufficient_credits", ("insufficient credits", "exceeded your current quota",
                               "requires more credits", "can only afford")),
-    ("no_endpoint", ("no endpoints found", "no allowed providers", "no available provider")),
+    ("no_endpoint", ("no endpoints found", "no allowed providers", "no available provider",
+                     "endpoints out of", "guardrail restrictions", "data policy")),
     ("context_too_long", ("context length", "maximum context", "too many tokens",
                           "prompt is too long")),
     ("content_filtered", ("content filter", "content policy", "moderation", "flagged")),
@@ -138,9 +139,11 @@ def _provider_error(response: httpx.Response) -> ProviderError:
     for reason, phrases in _ERROR_PHRASES:
         if any(phrase in message for phrase in phrases):
             return reason
+    upstream = upstream_metadata or any(sign in message for sign in _UPSTREAM_SIGNS)
     if status == 429:
-        upstream = upstream_metadata or any(sign in message for sign in _UPSTREAM_SIGNS)
         return "rate_limited_upstream" if upstream else "rate_limited_account"
+    if status == 502 and upstream:
+        return "rate_limited_upstream"
     return _ERROR_FALLBACKS.get(status, "unknown")
 
 
